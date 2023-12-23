@@ -1,0 +1,15 @@
+* #variable= 3 #constraint= 1
+*
+* this is a  comment line
+* ensure that all constraints are either >= or =
+* if it is <=, multiply both sides by -1 to change to >=
+*
+* count is 0.125 (1 out of 8 possible assignemts satisfies the constraint)
+*
+* in case of weight lines (the weights of positive and negative literals are normalized to sum to 1.0)
+* weight lines are of the following form <* w literal weight>
+*
+* w 1 0.5
+* w 2 0.5
+* w 3 0.5
+3 x1 +4 x2 +5 x3 = 12 ;

@@ -1,0 +1,9 @@
+* #variable= 3 #constraint= 1
+*
+* this is a  comment line
+* ensure that all constraints are either >= or =
+* if it is <=, multiply both sides by -1 to change to >=
+*
+* count is 1
+*
+3 x1 +4 x2 +5 x3 = 12 ;

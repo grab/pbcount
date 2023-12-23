@@ -1,0 +1,7 @@
+
+*.json
+build/cmake_install.cmake
+build/CMakeCache.txt
+build
+lib
+*.DS_Store

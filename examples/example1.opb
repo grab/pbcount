@@ -1,0 +1,10 @@
+* #variable= 3 #constraint= 2
+*
+* this is a  comment line
+* ensure that all constraints are either >= or =
+* if it is <=, multiply both sides by -1 to change to >=
+*
+* count is 5
+*
+5 x1 +6 x2 +7 x3 >= 6;
+-5 x1 -6 x2 -7 x3 >= -15;
