@@ -1,6 +1,6 @@
 # PBCount
 
-Research source code release for pseudo boolean counter based on addmc
+Research source code release for pseudo boolean counter for our paper *Engineering an Exact Pseudo-Boolean Model Counter*
 
 ## Dependencies
 
