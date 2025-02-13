@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 #pragma once
 /* inclusions *****************************************************************/
 
@@ -7,8 +12,11 @@
 
 #include "counter.hpp"
 #include "pbformula.hpp"
+#include "interactive.hpp"
 
-
+// #include <boost/process.hpp>
+// #include <boost/filesystem.hpp>
+// namespace bp = boost::process;
 /* classes ********************************************************************/
 
 class OptionDict
@@ -28,6 +36,8 @@ public:
   Int randomSeedOption;
   Int verbosityLevelOption;
   Int preprocessingOption;
+  Int operationModeOption;
+  Int interactionAdaptiveRestartOption;
 
   cxxopts::Options *options;
 
@@ -41,6 +51,17 @@ public:
 
 namespace pbsolving
 {
+  void pbsolveInteractive(
+      const string &pbFilePath, 
+      WeightFormat weightFormat, 
+      OutputFormat outputFormat, 
+      ClusteringHeuristic clusteringHeuristic,
+      VarOrderingHeuristic pbVarOrderingHeuristic,
+      bool inversePbVarOrdering,
+      VarOrderingHeuristic ddVarOrderingHeuristic,
+      bool inverseDdVarOrdering,
+      ClauseCompilationHeuristic clauseCompilationHeuristic,
+      AdaptiveRestartChoice adaptiveRestartChoice);
   void pbsolveFile(
       const string &pbFilePath,
       WeightFormat weightFormat,
@@ -53,7 +74,9 @@ namespace pbsolving
       VarOrderingHeuristic ddVarOrderingHeuristic,
       bool inverseDdVarOrdering,
       ClauseCompilationHeuristic clauseCompilationHeuristic,
-      PreprocessingConfig preprocessingConfig);
+      PreprocessingConfig preprocessingConfig,
+      OperationModeChoice operationModeChoice,
+      AdaptiveRestartChoice adaptiveRestartChoice);
   void pbsolveOptions(
       const string &pbFilePath,
       Int weightFormatOption,
@@ -64,7 +87,9 @@ namespace pbsolving
       Int pbVarOrderingHeuristicOption,
       Int ddVarOrderingHeuristicOption,
       Int clauseCompilationHeuristicOption,
-      Int preprocessingOption);
+      Int preprocessingOption,
+      Int operationMode,
+      Int interactionAdaptiveRestartMode);
   void pbsolveCommand(int argc, char *argv[]);
 }
 /* global functions ***********************************************************/

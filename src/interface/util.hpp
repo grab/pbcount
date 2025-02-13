@@ -1,10 +1,7 @@
-/* DAG of inclusions:
-.>>>> graph  >> formula
-^               v
-util >> join >> counter >> main*
-v               ^
-.>>>>>>>>>>>>>> visual
-*/
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
 
 #pragma once
 
@@ -22,6 +19,7 @@ v               ^
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
+#include <sstream>
 
 #include "pbclause.hpp"
 
@@ -73,6 +71,8 @@ extern const string &RANDOM_SEED_OPTION;
 extern const string &VERBOSITY_LEVEL_OPTION;
 extern const string &CLAUSE_COMPILATION_HEURISTIC_OPTION;
 extern const string &PREPROCESSING_OPTION;
+extern const string &OPERATION_MODE_OPTION;
+extern const string &INTERACTION_ADAPTIVE_RESTART_OPTION;
 
 // enum class WeightFormat { UNWEIGHTED, MINIC2D, CACHET, MCC };
 enum class WeightFormat { UNWEIGHTED, WEIGHTED, MINIC2D, CACHET, MCC};
@@ -85,25 +85,33 @@ enum class OutputFormat { JOIN_TREE, MODEL_COUNT };
 extern const std::map<Int, OutputFormat> OUTPUT_FORMAT_CHOICES;
 extern const Int DEFAULT_OUTPUT_FORMAT_CHOICE;
 
-enum class ClusteringHeuristic { MONOLITHIC, LINEAR, BUCKET_LIST, BUCKET_TREE, BOUQUET_LIST, BOUQUET_TREE };
+enum class ClusteringHeuristic { MONOLITHIC, LINEAR, BUCKET_LIST, BUCKET_TREE, BOUQUET_LIST, BOUQUET_TREE, COMPUTE_GRAPH_MIN_DEGREE };
 extern const std::map<Int, ClusteringHeuristic> CLUSTERING_HEURISTIC_CHOICES;
 extern const Int DEFAULT_CLUSTERING_HEURISTIC_CHOICE;
 
 enum class VarOrderingHeuristic {
   DUMMY_VAR_ORDERING_HEURISTIC, // would trigger error in Cnf::getVarOrdering
-  APPEARANCE, DECLARATION, RANDOM, MCS, LEXP, LEXM
-};
+  APPEARANCE, DECLARATION, RANDOM, MCS, LEXP, LEXM, MINFILL
+}; // note only add to the back of the enum to preserve previous enum nunbers
 extern const std::map<Int, VarOrderingHeuristic> VAR_ORDERING_HEURISTIC_CHOICES;
 extern const Int DEFAULT_CNF_VAR_ORDERING_HEURISTIC_CHOICE;
 extern const Int DEFAULT_DD_VAR_ORDERING_HEURISTIC_CHOICE;
 
-enum class ClauseCompilationHeuristic { BOTTOMUP, TOPDOWN, DYNAMIC };
+enum class ClauseCompilationHeuristic { BOTTOMUP, TOPDOWN, DYNAMIC, OPT_BOTTOMUP, OPT_TOPDOWN };
 extern const std::map<Int, ClauseCompilationHeuristic> CLAUSE_COMPILATION_HEURISTIC_CHOICES;
 extern const Int DEFAULT_CLAUSE_COMPILATION_HEURISTIC_CHOICE;
 
 enum class PreprocessingConfig { OFF, ALL };
 extern const std::map<Int, PreprocessingConfig> PREPROCESSING_CHOICES;
 extern const Int DEFAULT_PREPROCESSING_CHOICE;
+
+enum class OperationModeChoice { Single, Incremental };
+extern const std::map<Int, OperationModeChoice> OPERATION_MODES;
+extern const Int DEFAULT_OPERATION_MODE_CHOICE;
+
+enum class AdaptiveRestartChoice { ON, OFF };
+extern const std::map<Int, AdaptiveRestartChoice> INTERACTIVE_ADAPTIVE_RESTART_CHOICES;
+extern const Int DEFAULT_INTERACTIVE_ADAPTIVE_RESTART_CHOICE;
 
 extern const Int DEFAULT_RANDOM_SEED;
 
@@ -142,6 +150,8 @@ namespace util {
   void printOutputFormatOption();
   void printClusteringHeuristicOption();
   void printPreprocessingOption();
+  void printOperationModeOption();
+  void printInteractionAdaptiveRestartOption();
   void printCnfVarOrderingHeuristicOption();
   void printDdVarOrderingHeuristicOption();
   void printClauseCompilationHeuristicOption();
@@ -159,6 +169,8 @@ namespace util {
   string getVerbosityLevelName(Int verbosityLevel);
   string getClauseCompilationHeuristicName(ClauseCompilationHeuristic clauseCompilationHeuristic);
   string getPreprocessingConfigName(PreprocessingConfig preprocessingConfig);
+  string getOperationModeChoiceName(OperationModeChoice operationMode);
+  string getInteractiveAdaptiveRestartChoiceName(AdaptiveRestartChoice restartMode);
 
   /* functions: CNF ***********************************************************/
 
@@ -195,10 +207,22 @@ namespace util {
   void printPb(const vector<PBclause> &clauses);
   // void printLiteralWeights(const Map<Int, Float> &literalWeights);
 
+  /* functions: model count adjustment for compute graph counter ***********************************************************/
+
+  Float adjustModelCountCG(Float apparentModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments);
+  Float adjustModelCountCGMissingVar (Float totalModelCount, Int parsedVarNum, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &processedVariables);
+  Float adjustProjectedModelCountCG(Float apparentModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &projectionSupportVarSet);
+  Float adjustProjectedModelCountCGMissingVar (Float totalModelCount, Int parsedVarNum, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &processedVariables, const Set<Int> &projectionSupportVarSet);
+
+  // interactive mode with projected model count
+  Float adjustInteractiveProjectedModelCountCG(Float apparentModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &projectionSupportVarSet, Set<Int> &activeVarSet);
+  Float adjustInteractiveProjectedModelCountCGMissingVar (Float totalModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &processedVariables, const Set<Int> &projectionSupportVarSet, Set<Int> &activeVarSet);
+
   /* functions: timing ********************************************************/
 
   TimePoint getTimePoint();
   Float getSeconds(TimePoint startTime);
+  Float getMilliseconds(TimePoint startTime);
   void printDuration(TimePoint startTime);
 
   /* functions: error handling ************************************************/
@@ -250,6 +274,10 @@ namespace util {
 
   template<typename T, typename U> bool isFound(const T &element, const U &container) {
     return std::find(std::begin(container), std::end(container), element) != std::end(container);
+  }
+
+  template<typename T, typename U, typename V> bool isFound(const T &element, const Map<U, V> &container) {
+    return container.find(element) != container.end();
   }
 
   template<typename T, typename U1, typename U2> void differ(Set<T> &diff, const U1 &members, const U2 &nonmembers) {
@@ -524,6 +552,44 @@ namespace util {
       a[i] = zippedVector[i].first;
       b[i] = zippedVector[i].second;
     }
+  }
+
+  template <typename T>
+  Set<T> setIntersection(Set<T> &setA, Set<T> &setB) {
+    Set<T> intersectionSet;
+    if (setA.size() > setB.size()) {
+      for (auto element : setB) {
+        if (util::isFound(element, setA)) { intersectionSet.insert(element); }
+      }
+    } else {
+      for (auto element : setA) {
+        if (util::isFound(element, setB)) { intersectionSet.insert(element); }
+      }
+    }
+    return intersectionSet;
+  }
+
+  template <typename T>
+  Set<T> setUnion(Set<T> &setA, Set<T> &setB) {
+    Set<T> unionSet;
+    for (auto element : setA) {
+      unionSet.insert(element);
+    }
+    for (auto element : setB) {
+      unionSet.insert(element);
+    }
+    return unionSet;
+  }
+  // Set (unordered_set) check is subset
+  template <typename T>
+  bool isSubset(Set<T> &subsetA, Set<T> &setB) {
+    // checks if A is subset of B
+    if(subsetA.size() > setB.size()) { return false; }
+    for (auto &element : subsetA) {
+      // if (!util::isFound(element, setB)) { return false; }
+      if(setB.find(element) == setB.end()) {return false;}
+    }
+    return true;
   }
 }
 

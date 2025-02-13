@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 #pragma once
 
 /* inclusions *****************************************************************/
@@ -49,9 +54,14 @@ protected:
   vector<Int> getLexmVarOrdering() const;
   vector<Int> getMcsVarOrdering() const;
 
+  Int getNextMinfillVar(Graph& graph) const;
+  vector<Int> getMinfillVarOrdering() const;
+
 public:
+  void insertClause(const PBclause &clause); // writes: clauses, apparentVars, litweights, 
   bool isProjected() const;
   const Set<Int> &getProjectionVariableSet() const;
+  void setProjectionVariableSet(Set<Int> &newProjectionVariableSet);
   vector<Int> getVarOrdering(VarOrderingHeuristic varOrderingHeuristic, bool inverse) const;
   Int getDeclaredVarCount() const;
   Int getDeclaredClauseCount() const;
@@ -63,6 +73,7 @@ public:
   void printLiteralWeights() const;
   void printClauses() const;
   PBformula(string &filePath, bool isWeighted=false);
+  PBformula();
   void inferAssignment(PBclause &clause, Map<Int, bool> &inferredAssignmentMap);
   void preprocess();
   Set<Int> probeInferAssign(Map<Int, bool> &inferredAssignmentMap, vector<PBclause> &clauseVector);
@@ -75,5 +86,5 @@ public:
   Set<Int> failedLiteralTest(Map<Int, bool> &inferredAssignmentMap, vector<PBclause> &clauseVector);
   void detectSolver();
   bool checkAlwaysTrue(PBclause& clause);
-
+  MultiTypeGraph getInteractionGraph() const;
 };

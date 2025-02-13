@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 /* inclusions *****************************************************************/
 
 #include "../interface/pbformula.hpp"
@@ -12,7 +17,7 @@ const string &PB_EOL_WORD = ";";
 
 void PBformula::updateApparentVars(Int literal) {
   Int var = std::abs(literal);
-  if (std::find(this->apparentVars.begin(), this->apparentVars.end(), var) !=
+  if (std::find(this->apparentVars.begin(), this->apparentVars.end(), var) ==
       this->apparentVars.end()) {
     this->apparentVars.push_back(var);
   }
@@ -22,6 +27,7 @@ void PBformula::addClause(const PBclause &clause) {
   for (Int literal : clause.lits) {
     this->updateApparentVars(literal);
   }
+  this->declaredClauseCount += 1;
 }
 Graph PBformula::getGaifmanGraph() const {
   std::unordered_set<Int> vars;
@@ -160,6 +166,60 @@ vector<Int> PBformula::getMcsVarOrdering() const {
   return varOrdering;
 }
 
+Int PBformula::getNextMinfillVar(Graph& graph) const {
+  vector<Int> neighbourVec;
+  Int currentMinFillVar = -1;
+  Int currentMinFillValue = DUMMY_MAX_INT;
+  for (Int var : graph.vertices) {
+    neighbourVec.clear();
+    int numFill = 0;
+    for (Int neighbour : graph.adjacencyMap.at(var)) {
+      if (neighbour != var) {
+        neighbourVec.push_back(neighbour);
+      }
+    }
+    for (int i = 0; i < neighbourVec.size(); i++) {
+      for (int j = i+1; j < neighbourVec.size(); j++) {
+        if (!util::isFound(neighbourVec[j], graph.adjacencyMap.at(neighbourVec[i]))) {
+          numFill++;
+        }
+      }
+    }
+    if (numFill < currentMinFillValue) {
+      currentMinFillValue = numFill;
+      currentMinFillVar = var;
+    }
+  }
+  return currentMinFillVar;
+}
+vector<Int> PBformula::getMinfillVarOrdering() const {
+  Graph graph = this->getGaifmanGraph();
+  vector<Int> neighoursVec;
+  
+  vector<Int> varOrdering;
+
+  while (graph.vertices.size() > 0) {
+    neighoursVec.clear();
+    Int minVar = getNextMinfillVar(graph);
+    varOrdering.push_back(minVar);
+
+    for (Int var : graph.adjacencyMap.at(minVar)) {
+      if (var != minVar) {
+        neighoursVec.push_back(var);
+      }
+    }
+    graph.removeVertex(minVar);
+    // fill
+    for (int i=0; i < neighoursVec.size(); i++) {
+      for (int j=i+1; j < neighoursVec.size(); j++) {
+        graph.addEdge(neighoursVec[i], neighoursVec[j]);
+      }
+    }
+  }
+
+  return varOrdering;
+}
+
 vector<Int> PBformula::getVarOrdering(VarOrderingHeuristic varOrderingHeuristic,
                                       bool inverse) const {
   vector<Int> varOrdering;
@@ -188,8 +248,12 @@ vector<Int> PBformula::getVarOrdering(VarOrderingHeuristic varOrderingHeuristic,
       varOrdering = this->getMcsVarOrdering();
       break;
     }
+    case VarOrderingHeuristic::MINFILL: {
+      varOrdering = this->getMinfillVarOrdering();
+      break;
+    }
     default: {
-      showError("DUMMY_VAR_ORDERING_HEURISTIC -- Cnf::getVarOrdering");
+      showError("DUMMY_VAR_ORDERING_HEURISTIC -- PBformula::getVarOrdering");
     }
   }
   if (inverse) {
@@ -200,9 +264,25 @@ vector<Int> PBformula::getVarOrdering(VarOrderingHeuristic varOrderingHeuristic,
 
 // public
 
+void PBformula::insertClause(const PBclause &clause) {
+  addClause(clause);
+  for (Int lit : clause.lits) {
+    Int var = abs(lit);
+    if ((literalWeights.find(var) == literalWeights.end()) && (literalWeights.find(-var) == literalWeights.end())){
+      // weight not found, so we just set as 1.0 for unweighted
+      literalWeights[var] = 1.0;
+      literalWeights[-var] = 1.0;
+    }
+  }
+}
+
 bool PBformula::isProjected() const { return this->projectedFormula; }
 const Set<Int> &PBformula::getProjectionVariableSet() const {
   return this->projectionVariableSet;
+}
+void PBformula::setProjectionVariableSet(Set<Int> &newProjectionVariableSet) {
+  this->projectionVariableSet = newProjectionVariableSet;
+  this->projectedFormula = !(this->projectionVariableSet.size() == 0);
 }
 Int PBformula::getDeclaredVarCount() const { return this->declaredVarCount; }
 Int PBformula::getDeclaredClauseCount() const {
@@ -214,7 +294,6 @@ Map<Int, Float> PBformula::getLiteralWeights() const {
 }
 Int PBformula::getEmptyClauseIndex() const {
   // first (nonnegative) index if found else DUMMY_MIN_INT
-  // todo: figure out and document why is this function needed
   for (Int clauseIndex = 0; clauseIndex < this->clauses.size(); clauseIndex++) {
     if (clauses.at(clauseIndex).lits.empty()) {
       return clauseIndex;
@@ -257,11 +336,17 @@ PBformula::PBformula(std::string &filePath, bool isWeighted) {
 
   Int declaredClauseCount = DUMMY_MIN_INT;
   Int processedClauseCount = 0;
+
   Int declaredVarCount = DUMMY_MIN_INT;
+
   Int lineIndex = 0;
   Int minic2dWeightLineIndex = DUMMY_MIN_INT;
+
   std::unordered_map<Int, Int> varInputOrderMap;
   Int varCounter = 0;
+
+  bool indProjectionLine = false; // handling * ind 
+  bool showProjectionLine = false; // handling * p show
 
   string line;
   while (std::getline(*inputStream, line)) {
@@ -309,7 +394,7 @@ PBformula::PBformula(std::string &filePath, bool isWeighted) {
       } else if (wordCount >= 2 && words.at(1) == "ind") {
         // parsing projection variable lines
         if (words.at(wordCount- 1) != "0") {
-          std::cout << "Detected * ind line without 0 as line end tokem, please check input file" << std::endl;
+          throw MyError("Detected * ind line without 0 as line end token, please check input file", true);
         }
         for (Int i=2; i< wordCount - 1; i++) {
           Int var = std::stoll(words.at(i));
@@ -319,11 +404,25 @@ PBformula::PBformula(std::string &filePath, bool isWeighted) {
           }
           this->projectionVariableSet.insert(var);
         }
+        indProjectionLine = true;
+      } else if (wordCount >= 3 && words.at(1) == "p" && words.at(2) == "show") {
+        if (words.at(wordCount- 1) != "0") {
+          throw MyError("Detected * p show line without 0 as line end token, please check input file", true);
+        }
+        for (Int i=3; i< wordCount - 1; i++) {
+          Int var = std::stoll(words.at(i));
+          if (var < 0) {
+            std::cout << "Detected * p show negative variable index, parsing absolute index, pleas check input file" << std::endl;
+            var = std::abs(var);
+          }
+          this->projectionVariableSet.insert(var);
+        }
+        showProjectionLine = true;
       } else if (isWeighted && wordCount >= 4 && words.at(1) == "w") {
         // * w lit weight
         Int literal = std::stoll(words.at(2));
         Float literalWeight = std::stod(words.at(3));
-        this->literalWeights[literal] = literalWeight;
+        this->literalWeights.at(literal) = literalWeight;
       } else {
         continue;
       }
@@ -434,6 +533,9 @@ PBformula::PBformula(std::string &filePath, bool isWeighted) {
   
   if (projectionVariableSet.size() > 0) {
     this->projectedFormula = true;
+    if (showProjectionLine && indProjectionLine) {
+      throw MyError("Detected both * ind and * p show projection sets, please only use one type in input file.", true);
+    }
   } else {
     this->projectedFormula = false;
   }
@@ -451,6 +553,10 @@ PBformula::PBformula(std::string &filePath, bool isWeighted) {
   }
 
   std::cout << "Completed parsing" << std::endl;
+}
+
+PBformula::PBformula() {
+  ;
 }
 
 void PBformula::inferAssignment(PBclause &clause, Map<Int, bool> &inferredAssignmentMap) {
@@ -886,4 +992,29 @@ bool PBformula::checkAlwaysTrue(PBclause& clause) {
     alwaysTrue = true;
   }
   return alwaysTrue;
+}
+
+MultiTypeGraph PBformula::getInteractionGraph() const {
+  MultiTypeGraph interactionGraph;
+
+  // add all variable nodes
+  Map<Int, Int> varToVertexID;
+  for (const Int &var : apparentVars) {
+    Int vertexID = interactionGraph.addVarVertex(var);
+    varToVertexID[var] = vertexID;
+  }
+  // add all clause nodes
+  Map<Int, Int> clauseToVertexID;
+  for (const PBclause &clause : clauses) {
+    Int vertexID = interactionGraph.addClauseVertex(clause.clauseId);
+    clauseToVertexID[clause.clauseId] = vertexID;
+  }
+  // add edges between variable and clauses, bidirectional
+  for (const PBclause &clause : clauses) {
+    for (Int lit : clause.lits) {
+      // take weight as 1 for now
+      interactionGraph.addEdge(clauseToVertexID[clause.clauseId], varToVertexID[abs(lit)]);
+    }
+  }
+  return interactionGraph;
 }

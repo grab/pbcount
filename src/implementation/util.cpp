@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 /* inclusions *****************************************************************/
 
 #include "../interface/util.hpp"
@@ -31,11 +36,15 @@ const string &RANDOM_SEED_OPTION = "rs";
 const string &VERBOSITY_LEVEL_OPTION = "vl";
 const string &CLAUSE_COMPILATION_HEURISTIC_OPTION = "cc";
 const string &PREPROCESSING_OPTION = "pp";
+const string &OPERATION_MODE_OPTION = "om";
+const string &INTERACTION_ADAPTIVE_RESTART_OPTION = "re";
 
 const std::map<Int, ClauseCompilationHeuristic> CLAUSE_COMPILATION_HEURISTIC_CHOICES = {
   {1, ClauseCompilationHeuristic::BOTTOMUP},
   {2, ClauseCompilationHeuristic::TOPDOWN},
-  {3, ClauseCompilationHeuristic::DYNAMIC}
+  {3, ClauseCompilationHeuristic::DYNAMIC},
+  {4, ClauseCompilationHeuristic::OPT_BOTTOMUP},
+  {5, ClauseCompilationHeuristic::OPT_TOPDOWN}
 };
 const Int DEFAULT_CLAUSE_COMPILATION_HEURISTIC_CHOICE = 3;
 
@@ -45,9 +54,21 @@ const std::map<Int, PreprocessingConfig> PREPROCESSING_CHOICES = {
 };
 const Int DEFAULT_PREPROCESSING_CHOICE = 2;
 
+const std::map<Int, OperationModeChoice> OPERATION_MODES = {
+  {1, OperationModeChoice::Single},
+  {2, OperationModeChoice::Incremental}
+};
+const Int DEFAULT_OPERATION_MODE_CHOICE = 1;
+
+const std::map<Int, AdaptiveRestartChoice> INTERACTIVE_ADAPTIVE_RESTART_CHOICES = {
+  {1, AdaptiveRestartChoice::ON},
+  {2, AdaptiveRestartChoice::OFF}
+};
+const Int DEFAULT_INTERACTIVE_ADAPTIVE_RESTART_CHOICE = 2;
+
 const std::map<Int, WeightFormat> WEIGHT_FORMAT_CHOICES = {
   {1, WeightFormat::UNWEIGHTED},
-  {2, WeightFormat::WEIGHTED} // weight line's trailing '0' is optional
+  {2, WeightFormat::WEIGHTED}
 };
 const Int DEFAULT_WEIGHT_FORMAT_CHOICE = 1;
 
@@ -65,9 +86,10 @@ const std::map<Int, ClusteringHeuristic> CLUSTERING_HEURISTIC_CHOICES = {
   {3, ClusteringHeuristic::BUCKET_LIST},
   {4, ClusteringHeuristic::BUCKET_TREE},
   {5, ClusteringHeuristic::BOUQUET_LIST},
-  {6, ClusteringHeuristic::BOUQUET_TREE}
+  {6, ClusteringHeuristic::BOUQUET_TREE},
+  {7, ClusteringHeuristic::COMPUTE_GRAPH_MIN_DEGREE}
 };
-const Int DEFAULT_CLUSTERING_HEURISTIC_CHOICE = 6;
+const Int DEFAULT_CLUSTERING_HEURISTIC_CHOICE = 7;
 
 const std::map<Int, VarOrderingHeuristic> VAR_ORDERING_HEURISTIC_CHOICES = {
   {1, VarOrderingHeuristic::APPEARANCE},
@@ -75,7 +97,8 @@ const std::map<Int, VarOrderingHeuristic> VAR_ORDERING_HEURISTIC_CHOICES = {
   {3, VarOrderingHeuristic::RANDOM},
   {4, VarOrderingHeuristic::MCS},
   {5, VarOrderingHeuristic::LEXP},
-  {6, VarOrderingHeuristic::LEXM}
+  {6, VarOrderingHeuristic::LEXM},
+  {7, VarOrderingHeuristic::MINFILL}
 };
 const Int DEFAULT_CNF_VAR_ORDERING_HEURISTIC_CHOICE = 5;
 const Int DEFAULT_DD_VAR_ORDERING_HEURISTIC_CHOICE = 4;
@@ -143,7 +166,7 @@ void util::printCnfFileOption() {
 
 void util::printWeightFormatOption() {
   cout << "      --" << WEIGHT_FORMAT_OPTION << " arg  ";
-  cout << "weight format in cnf file:\n";
+  cout << "weight format in input file:\n";
   for (const auto &kv : WEIGHT_FORMAT_CHOICES) {
     int num = kv.first;
     cout << "           " << num << "    " << std::left << std::setw(50) << getWeightFormatName(kv.second);
@@ -231,6 +254,28 @@ void util::printPreprocessingOption() {
   }
 }
 
+void util::printOperationModeOption() {
+  cout << "      --" << OPERATION_MODE_OPTION << " arg  ";
+  cout << "preprocessing options:\n";
+  for (const auto &kv : OPERATION_MODES) {
+    int num = kv.first;
+    cout << "           " << num << "    " << std::left << std::setw(50) << getOperationModeChoiceName(kv.second);
+    if (num == std::abs(DEFAULT_OPERATION_MODE_CHOICE)) cout << "Default: " << DEFAULT_OPERATION_MODE_CHOICE;
+    cout << "\n";
+  }
+}
+
+void util::printInteractionAdaptiveRestartOption() {
+  cout << "      --" << INTERACTION_ADAPTIVE_RESTART_OPTION << " arg  ";
+  cout << "adaptive restart options:\n";
+  for (const auto &kv : INTERACTIVE_ADAPTIVE_RESTART_CHOICES) {
+    int num = kv.first;
+    cout << "           " << num << "    " << std::left << std::setw(50) << getInteractiveAdaptiveRestartChoiceName(kv.second);
+    if (num == std::abs(DEFAULT_OPERATION_MODE_CHOICE)) cout << "Default: " << DEFAULT_INTERACTIVE_ADAPTIVE_RESTART_CHOICE;
+    cout << "\n";
+  }
+}
+
 void util::printRandomSeedOption() {
   cout << "      --" << RANDOM_SEED_OPTION << std::left << std::setw(56) << " arg  random seed";
   cout << "Default: " + to_string(DEFAULT_RANDOM_SEED) + "\n";
@@ -313,6 +358,9 @@ string util::getClusteringHeuristicName(ClusteringHeuristic clusteringHeuristic)
     case ClusteringHeuristic::BOUQUET_TREE: {
       return "BOUQUET_TREE";
     }
+    case ClusteringHeuristic::COMPUTE_GRAPH_MIN_DEGREE: {
+      return "COMPUTE_GRAPH_MIN_DEGREE";
+    }
     default: {
       showError("no such clusteringHeuristic");
       return DUMMY_STR;
@@ -340,6 +388,9 @@ string util::getVarOrderingHeuristicName(VarOrderingHeuristic varOrderingHeurist
     case VarOrderingHeuristic::MCS: {
       return "MCS";
     }
+    case VarOrderingHeuristic::MINFILL: {
+      return "MINFILL";
+    }
     default: {
       showError("DUMMY_VAR_ORDERING_HEURISTIC in util::getVarOrderingHeuristicName");
       return DUMMY_STR;
@@ -358,6 +409,12 @@ string util::getClauseCompilationHeuristicName(ClauseCompilationHeuristic clause
     case ClauseCompilationHeuristic::DYNAMIC: {
       return "DYNAMIC";
     }
+    case ClauseCompilationHeuristic::OPT_BOTTOMUP: {
+      return "OPTIMIZED_BOTTOMUP";
+    }
+    case ClauseCompilationHeuristic::OPT_TOPDOWN: {
+      return "OPTIMIZED_TOPDOWN";
+    }
     default: {
       showError("DUMMY_CLAUSE_COMPILATION_HEURISTIC in util::getClauseCompilationHeuristicName");
       return DUMMY_STR;
@@ -375,6 +432,36 @@ string util::getPreprocessingConfigName(PreprocessingConfig preprocessingConfig)
     }
     default: {
       showError("DUMMY_PREPROCESSING_OPTION in util::getPreprocessingConfigName");
+      return DUMMY_STR;
+    }
+  }
+}
+
+string util::getOperationModeChoiceName(OperationModeChoice operationMode) {
+  switch (operationMode) {
+    case OperationModeChoice::Single: {
+      return "Single, one time model count";
+    }
+    case OperationModeChoice::Incremental: {
+      return "Interactive mode, for incremental counting";
+    }
+    default: {
+      showError("DUMMY_OPERATION_MODE_OPTION in util::getOperationModeChoiceName");
+      return DUMMY_STR;
+    }
+  }
+}
+
+string util::getInteractiveAdaptiveRestartChoiceName(AdaptiveRestartChoice restartMode) {
+  switch (restartMode) {
+    case AdaptiveRestartChoice::ON: {
+      return "ENABLE Adaptive restart";
+    }
+    case AdaptiveRestartChoice::OFF: {
+      return "DISABLE Adaptive restart";
+    }
+    default: {
+      showError("DUMMY_INTERACTION_ADAPTIVE_RESTART_CHOICE in util::getInteractiveAdaptiveRestartChoiceName");
       return DUMMY_STR;
     }
   }
@@ -569,6 +656,199 @@ void util::printPb(const vector<PBclause> &clauses) {
   printThinLine();
 }
 
+/* functions: pb compute graph counter *****************************/
+
+/* model counting adjustment for compute graph based counters with preprocessing (inferred assignments)*/
+Float util::adjustModelCountCG(Float apparentModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments) {
+  /*
+  This version is to handle counting with preprocessing.
+  Unit clauses are removed in preprocessing and we want to account for
+  the situation where x1>=1 (only 1 satisfying assignment) but x1 does not appear elsewhere so not counted. (we cannot assume both true and false satisfy now)
+  */
+  Float totalModelCount = apparentModelCount;
+
+  Int totalLiteralCount = literalWeights.size();
+  if (totalLiteralCount % 2 == 1) showError("odd total literal count");
+
+  for (auto &assignment : inferredAssignments) {
+    double posWeight = 1.0;
+    double negWeight = 1.0;
+    Int var = assignment.first;
+
+    if (literalWeights.find(var) != literalWeights.end()){
+      posWeight = literalWeights.at(var);
+    }
+    if (literalWeights.find(-var) != literalWeights.end()){
+      negWeight = literalWeights.at(-var);
+    }
+    if (assignment.second) {
+      // inferred assignment is true
+      totalModelCount *= posWeight;
+    } else {
+      totalModelCount *= negWeight;
+    }
+  }
+
+  if (totalModelCount == 0) {
+    showWarning("floating-point underflow may have occured or unsat formula");
+  }
+  return totalModelCount;
+}
+
+Float util::adjustModelCountCGMissingVar (Float totalModelCount, Int parsedVarNum, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &processedVariables) {
+  Float adjustedModelCount = totalModelCount;
+  bool unappearedVar = false;
+  Int totalVarNum = parsedVarNum;
+  for (Int pbVar = 1; pbVar <= totalVarNum; pbVar++) {
+    if (!isFound(pbVar, processedVariables)) {
+      if (inferredAssignments.find(pbVar) == inferredAssignments.end()) {
+        unappearedVar = true;
+        Float posWeight = 1.0;
+        Float negWeight = 1.0;
+        if (literalWeights.find(pbVar) != literalWeights.end()){
+          posWeight = literalWeights.at(pbVar);
+        }
+        if (literalWeights.find(-pbVar) != literalWeights.end()){
+          negWeight = literalWeights.at(-pbVar);
+        }
+        adjustedModelCount *= posWeight + negWeight;
+      }
+    }
+  }
+  if (unappearedVar) {
+    std::cout << "Some variables did not appear in formula, setting weight to 1.0 in counting" << std::endl; 
+  }
+  return adjustedModelCount;
+}
+
+Float util::adjustProjectedModelCountCG(Float apparentModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &projectionSupportVarSet) {
+  /*
+  This version is to handle counting with preprocessing.
+  Unit clauses are removed in preprocessing and we want to account for
+  the situation where x1>=1 (only 1 satisfying assignment) but x1 does not appear elsewhere so not counted. (we cannot assume both true and false satisfy now)
+  */
+  Float totalModelCount = apparentModelCount;
+
+  Int totalLiteralCount = literalWeights.size();
+  if (totalLiteralCount % 2 == 1) showError("odd total literal count");
+
+  for (auto &assignment : inferredAssignments) {
+    double posWeight = 1.0;
+    double negWeight = 1.0;
+    Int var = assignment.first;
+    // if not in projection set, just or abstract, so do not need to care about weight
+    if (!isFound(var, projectionSupportVarSet)) { continue; }
+
+    if (literalWeights.find(var) != literalWeights.end()){
+      posWeight = literalWeights.at(var);
+    }
+    if (literalWeights.find(-var) != literalWeights.end()){
+      negWeight = literalWeights.at(-var);
+    }
+    if (assignment.second) {
+      // inferred assignment is true
+      totalModelCount *= posWeight;
+    } else {
+      totalModelCount *= negWeight;
+    }
+  }
+
+  if (totalModelCount == 0) {
+    showWarning("floating-point underflow may have occured or unsat formula");
+  }
+  return totalModelCount;
+}
+
+Float util::adjustProjectedModelCountCGMissingVar (Float totalModelCount, Int parsedVarNum, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &processedVariables, const Set<Int> &projectionSupportVarSet) {
+  Float adjustedModelCount = totalModelCount;
+  bool unappearedVar = false;
+  Int totalVarNum = parsedVarNum;
+  for (Int pbVar = 1; pbVar <= totalVarNum; pbVar++) {
+    if (!isFound(pbVar, processedVariables)) {
+      if (!isFound(pbVar, projectionSupportVarSet)) { continue; }
+      if (inferredAssignments.find(pbVar) == inferredAssignments.end()) {
+        unappearedVar = true;
+        Float posWeight = 1.0;
+        Float negWeight = 1.0;
+        if (literalWeights.find(pbVar) != literalWeights.end()){
+          posWeight = literalWeights.at(pbVar);
+        }
+        if (literalWeights.find(-pbVar) != literalWeights.end()){
+          negWeight = literalWeights.at(-pbVar);
+        }
+        adjustedModelCount *= posWeight + negWeight;
+      }
+    }
+  }
+  if (unappearedVar) {
+    std::cout << "Some variables did not appear in formula, setting weight to 1.0 in counting" << std::endl; 
+  }
+  return adjustedModelCount;
+}
+
+Float util::adjustInteractiveProjectedModelCountCG(Float apparentModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &projectionSupportVarSet, Set<Int> &activeVarSet) {
+  Float totalModelCount = apparentModelCount;
+
+  for (auto &assignment : inferredAssignments) {
+    double posWeight = 1.0;
+    double negWeight = 1.0;
+    Int var = assignment.first;
+
+    // if not in active variables, ignore
+    if (!isFound(var, activeVarSet)) { continue; }
+    // if not in projection set, just or abstract, so do not need to care about weight
+    if (!isFound(var, projectionSupportVarSet)) { continue; }
+
+    if (literalWeights.find(var) != literalWeights.end()){
+      posWeight = literalWeights.at(var);
+    }
+    if (literalWeights.find(-var) != literalWeights.end()){
+      negWeight = literalWeights.at(-var);
+    }
+    if (assignment.second) {
+      // inferred assignment is true
+      totalModelCount *= posWeight;
+    } else {
+      totalModelCount *= negWeight;
+    }
+  }
+
+  Int totalLiteralCount = literalWeights.size();
+  if (totalLiteralCount % 2 == 1) showError("odd total literal count");
+
+  if (totalModelCount == 0) {
+    showWarning("floating-point underflow may have occured or unsat formula");
+  }
+  return totalModelCount;
+}
+
+Float util::adjustInteractiveProjectedModelCountCGMissingVar(Float totalModelCount, const Map<Int, Float> &literalWeights, const Map<Int, bool> &inferredAssignments, const Set<Int> &processedVariables, const Set<Int> &projectionSupportVarSet, Set<Int> &activeVarSet) {
+  Float adjustedModelCount = totalModelCount;
+  bool unappearedVar = false;
+  for (Int pbVar : activeVarSet) {
+    if(!isFound(pbVar, processedVariables)) {
+      if (!isFound(pbVar, projectionSupportVarSet)) { continue; }
+      if (inferredAssignments.find(pbVar) == inferredAssignments.end()) {
+        unappearedVar = true;
+        Float posWeight = 1.0;
+        Float negWeight = 1.0;
+        if (literalWeights.find(pbVar) != literalWeights.end()){
+          posWeight = literalWeights.at(pbVar);
+        }
+        if (literalWeights.find(-pbVar) != literalWeights.end()){
+          negWeight = literalWeights.at(-pbVar);
+        }
+        adjustedModelCount *= posWeight + negWeight;
+      }
+    }
+  }
+  if (unappearedVar) {
+    std::cout << "Some variables did not appear in formula, setting weight to 1.0 in counting" << std::endl; 
+  }
+  return adjustedModelCount;
+}
+
+
 /* functions: timing **********************************************************/
 
 TimePoint util::getTimePoint() {
@@ -578,6 +858,11 @@ TimePoint util::getTimePoint() {
 Float util::getSeconds(TimePoint startTime) {
   TimePoint endTime = getTimePoint();
   return std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count() / 1000.0;
+}
+
+Float util::getMilliseconds(TimePoint startTime) {
+  TimePoint endTime = getTimePoint();
+  return std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
 }
 
 void util::printDuration(TimePoint startTime) {

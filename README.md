@@ -1,11 +1,15 @@
 # PBCount
 
-Research source code release for pseudo boolean counter for our paper *Engineering an Exact Pseudo-Boolean Model Counter*
+Research source code release for pseudo boolean counter for our papers: 
+  
+*Engineering an Exact Pseudo-Boolean Model Counter* (AAAI2024)
+  
+*Towards Projected and Incremental Pseudo-Boolean Model Counting* (AAAI2025)
 
 ## Dependencies
 
 cudd 3.0.0 (```https://github.com/ivmai/cudd/releases/tag/cudd-3.0.0```)  
-cxxopts 2.1.2 (```https://github.com/jarro2783/cxxopts/blob/v2.1.2/include/cxxopts.hpp```)
+cxxopts 2.1.2 (```https://github.com/jarro2783/cxxopts/blob/v2.1.2/include/cxxopts.hpp```)  
 boost 1.82 (```https://www.boost.org/```)
 
 ## Build
@@ -24,10 +28,10 @@ Alternatively you can create the `lib.tar` in the main directory of codebase. `l
         - cxxopts.hpp
 ```
 
-`lib.tar` is automatically extracted using cmake, which is invoked by `./INSTALL.sh`.
+`lib.tar` is automatically extracted using cmake, which is invoked by `./COMPILE.sh`.
 
 ```
-Build `pbcount` with `./INSTALL.sh`
+Build `pbcount` with `./COMPILE.sh`
 ```
 
 If you have the library files in other directories, please make changes to the `CMakeLists.txt` file using `LINK_DIRECTORIES` to specify library location and `INCLUDE_DIRECTORIES` to specify include directories for builds. 

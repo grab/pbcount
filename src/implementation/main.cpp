@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 /* inclusions *****************************************************************/
 
 #include "../interface/main.hpp"
@@ -25,6 +30,8 @@ void OptionDict::printOptionalOptions() const {
   util::printDdVarOrderingHeuristicOption();
   util::printClauseCompilationHeuristicOption();
   util::printPreprocessingOption();
+  util::printOperationModeOption();
+  util::printInteractionAdaptiveRestartOption();
   util::printRandomSeedOption();
   util::printVerbosityLevelOption();
 }
@@ -43,20 +50,20 @@ void OptionDict::printWelcome() const {
   printThickLine(commented);
 
   printComment(
-      "PBCount: Pseudo Boolean Counter based on decision diagrams (help: "
+      "PBCount2: Pseudo Boolean Counter based on decision diagrams (help: "
       "'pbcount -h')",
       0, 1, commented);
 
   const string &addversion = "0.0";
-  const string &version = "0.1";
-  const string &date = "2023/12/22";
-  printComment("Version " + version + ", released on " + date, 0, 1, commented);
+  const string &version = "research paper code";
+  const string &date = "0000/00/00";
+  // printComment("Version " + version + ", released on " + date, 0, 1, commented);
+  printComment("Version: " + version, 0, 1, commented);
 
   printThickLine(commented);
 }
 
 OptionDict::OptionDict(int argc, char *argv[]) {
-  // options = new cxxopts::Options("addmc", "");
   options = new cxxopts::Options("pbcount", "");
 
   options->add_options(OPTIONAL_OPTION_GROUP)
@@ -81,6 +88,10 @@ OptionDict::OptionDict(int argc, char *argv[]) {
       (CLAUSE_COMPILATION_HEURISTIC_OPTION, "", cxxopts::value<string>()->default_value(to_string(DEFAULT_CLAUSE_COMPILATION_HEURISTIC_CHOICE)))
       
       (PREPROCESSING_OPTION, "", cxxopts::value<string>()->default_value(to_string(DEFAULT_PREPROCESSING_CHOICE)))
+
+      (OPERATION_MODE_OPTION, "", cxxopts::value<string>()->default_value(to_string(DEFAULT_OPERATION_MODE_CHOICE)))
+
+      (INTERACTION_ADAPTIVE_RESTART_OPTION, "", cxxopts::value<string>()->default_value(to_string(DEFAULT_INTERACTIVE_ADAPTIVE_RESTART_CHOICE)))
       
       (RANDOM_SEED_OPTION, "", cxxopts::value<string>()->default_value(to_string(DEFAULT_RANDOM_SEED)))
       
@@ -113,6 +124,10 @@ OptionDict::OptionDict(int argc, char *argv[]) {
       std::stoll(result[CLAUSE_COMPILATION_HEURISTIC_OPTION].as<string>());
   preprocessingOption = 
       std::stoll(result[PREPROCESSING_OPTION].as<string>());
+  operationModeOption = 
+      std::stoll(result[OPERATION_MODE_OPTION].as<string>());
+  interactionAdaptiveRestartOption =
+      std::stoll(result[INTERACTION_ADAPTIVE_RESTART_OPTION].as<string>());
   randomSeedOption = std::stoll(result[RANDOM_SEED_OPTION].as<string>());
   verbosityLevelOption =
       std::stoll(result[VERBOSITY_LEVEL_OPTION].as<string>());
@@ -123,6 +138,16 @@ OptionDict::OptionDict(int argc, char *argv[]) {
 /* namespace pbsolving
  * **********************************************************/
 
+void pbsolving::pbsolveInteractive(const string &pbFilePath, WeightFormat weightFormat,
+                            OutputFormat outputFormat, ClusteringHeuristic clusteringHeuristic,
+                            VarOrderingHeuristic pbVarOrderingHeuristic, bool inversePbVarOrdering,
+                            VarOrderingHeuristic ddVarOrderingHeuristic, bool inverseDdVarOrdering,
+                            ClauseCompilationHeuristic clauseCompilationHeuristic,
+                            AdaptiveRestartChoice adaptiveRestartChoice) {
+  Interactor userInteractor = Interactor();
+  userInteractor.startInteraction(pbFilePath, weightFormat, outputFormat, clusteringHeuristic, pbVarOrderingHeuristic, inversePbVarOrdering, ddVarOrderingHeuristic, inverseDdVarOrdering, clauseCompilationHeuristic, adaptiveRestartChoice);
+}
+
 void pbsolving::pbsolveFile(const string &pbFilePath, WeightFormat weightFormat,
                             const string &jtFilePath, Float jtWaitSeconds,
                             OutputFormat outputFormat,
@@ -132,7 +157,9 @@ void pbsolving::pbsolveFile(const string &pbFilePath, WeightFormat weightFormat,
                             VarOrderingHeuristic ddVarOrderingHeuristic,
                             bool inverseDdVarOrdering,
                             ClauseCompilationHeuristic clauseCompilationHeuristic,
-                            PreprocessingConfig preprocessingConfig) {
+                            PreprocessingConfig preprocessingConfig,
+                            OperationModeChoice operationModeChoice,
+                            AdaptiveRestartChoice adaptiveRestartChoice) {
   if (verbosityLevel >= 1) {
     printComment("Reading command-line options...", 1);
 
@@ -155,7 +182,15 @@ void pbsolving::pbsolveFile(const string &pbFilePath, WeightFormat weightFormat,
     util::printRow("clauseComplilationHeuristic",
                    util::getClauseCompilationHeuristicName(clauseCompilationHeuristic));
     util::printRow("preprocessingConfig", util::getPreprocessingConfigName(preprocessingConfig));
+    util::printRow("operationMode", util::getOperationModeChoiceName(operationModeChoice));
+    util::printRow("InteractionAdaptiveRestartMode", util::getInteractiveAdaptiveRestartChoiceName(adaptiveRestartChoice));
     util::printRow("randomSeed", randomSeed);
+  }
+
+  if (operationModeChoice == OperationModeChoice::Incremental) {
+    pbsolveInteractive(pbFilePath, weightFormat, outputFormat, clusteringHeuristic, pbVarOrderingHeuristic, inversePbVarOrdering, ddVarOrderingHeuristic, inverseDdVarOrdering, clauseCompilationHeuristic,
+    adaptiveRestartChoice);
+    return;
   }
 
   if (outputFormat == OutputFormat::MODEL_COUNT && jtFilePath != DUMMY_STR) {
@@ -163,7 +198,6 @@ void pbsolving::pbsolveFile(const string &pbFilePath, WeightFormat weightFormat,
     return;
   }
 
-  // interject here for development purpose
   const std::map<WeightFormat, string> weightFormatNames = {
       {WeightFormat::UNWEIGHTED, "unweighted"},
       {WeightFormat::WEIGHTED, "weighted"}
@@ -217,6 +251,14 @@ void pbsolving::pbsolveFile(const string &pbFilePath, WeightFormat weightFormat,
       bouquetCounter.output(pbFilePath, weightFormat, outputFormat, preprocessingConfig);
       break;
     }
+    case ClusteringHeuristic::COMPUTE_GRAPH_MIN_DEGREE: {
+      PBComputeGraphCounter computeGraphCounter(
+          pbVarOrderingHeuristic, inversePbVarOrdering,
+          ddVarOrderingHeuristic, inverseDdVarOrdering,
+          clauseCompilationHeuristic);
+      computeGraphCounter.output(pbFilePath, weightFormat, outputFormat, preprocessingConfig);
+      break;
+    }
     default: {
       showError("no such clusteringHeuristic");
     }
@@ -232,7 +274,9 @@ void pbsolving::pbsolveOptions(const string &pbFilePath,
                                Int pbVarOrderingHeuristicOption,
                                Int ddVarOrderingHeuristicOption,
                                Int clauseCompilationHeuristicOption,
-                               Int preprocessingOption) {
+                               Int preprocessingOption,
+                               Int operationMode,
+                               Int interactionAdaptiveRestartMode) {
   WeightFormat weightFormat;
   try {
     weightFormat = WEIGHT_FORMAT_CHOICES.at(weightFormatOption);
@@ -294,12 +338,29 @@ void pbsolving::pbsolveOptions(const string &pbFilePath,
     showError("no such PrepropocessingConfig: " +
               to_string(preprocessingOption));
   }
+  OperationModeChoice operationModeChoice;
+  try {
+    operationModeChoice =
+        OPERATION_MODES.at(operationMode);
+  } catch (const std::out_of_range &) {
+    showError("no such OperationModeChoice: " +
+              to_string(operationMode));
+  }
+  AdaptiveRestartChoice adaptiveRestartChoice;
+  try {
+    adaptiveRestartChoice =
+        INTERACTIVE_ADAPTIVE_RESTART_CHOICES.at(interactionAdaptiveRestartMode);
+  } catch (const std::out_of_range &) {
+    showError("no such adaptiveRestartChoice: " +
+              to_string(interactionAdaptiveRestartMode));
+  }
 
   pbsolveFile(pbFilePath, weightFormat, jtFilePath, jtWaitSeconds, outputFormat,
               clusteringHeuristic, pbVarOrderingHeuristic,
               inverseCnfVarOrdering, ddVarOrderingHeuristic,
               inverseDdVarOrdering, clauseCompilationHeuristic,
-              preprocessingConfig);
+              preprocessingConfig, operationModeChoice, 
+              adaptiveRestartChoice);
 }
 
 void pbsolving::pbsolveCommand(int argc, char *argv[]) {
@@ -322,7 +383,9 @@ void pbsolving::pbsolveCommand(int argc, char *argv[]) {
                    optionDict.cnfVarOrderingHeuristicOption,
                    optionDict.ddVarOrderingHeuristicOption,
                    optionDict.clauseCompilationHeuristicOption,
-                   optionDict.preprocessingOption);
+                   optionDict.preprocessingOption,
+                   optionDict.operationModeOption,
+                   optionDict.interactionAdaptiveRestartOption);
     cout << "\n";
 
     util::printDuration(startTime);

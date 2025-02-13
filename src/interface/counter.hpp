@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 #pragma once
 
 /* inclusions *****************************************************************/
@@ -7,6 +12,8 @@
 #include "visual.hpp"
 #include "pbformula.hpp"
 
+#include <sstream>
+using util::isFound;
 /* namespaces *****************************************************************/
 
 namespace diagram {
@@ -59,14 +66,14 @@ protected:
   void printJoinTree(const PBformula &pb) const;
 
 public:
-  virtual void constructJoinTree(const PBformula &pb) = 0; // unimplemented
-  void setJoinTree(const PBformula &pb); // unimplemeneted
+  virtual void constructJoinTree(const PBformula &pb) = 0; // handles cnf without empty clause
+  void setJoinTree(const PBformula &pb); // handles cnf with/without empty clause
 
-  ADD countSubtree(JoinNode *joinNode, const PBformula &pb, Set<Int> &projectedPbVars); 
-  Float countJoinTree(const PBformula &pb); // unimplemented
+  ADD countSubtree(JoinNode *joinNode, const PBformula &pb, Set<Int> &projectedPbVars); // handles cnf without empty clause
+  Float countJoinTree(const PBformula &pb); // handles cnf with/without empty clause
 
-  virtual Float computeModelCount(const PBformula &pb) = 0; 
-  Float getModelCount(const PBformula &pb); 
+  virtual Float computeModelCount(const PBformula &pb) = 0; // handles cnf without empty clause
+  Float getModelCount(const PBformula &pb); // handles cnf with/without empty clause
 
   void output(const string &filePath, WeightFormat weightFormat, OutputFormat outputFormat, PreprocessingConfig preprocessingConfig);
 };
@@ -181,4 +188,109 @@ public:
     bool inverseDdVarOrdering,
     ClauseCompilationHeuristic clauseCompilationHeuristic
   );
+};
+
+class PBComputeGraphCounter : public PBCounter { // compute graph counter
+protected:
+  Map<Int, int> preferredVariableOrdering; // storing an ordering of pbVar : ordering position
+  VarOrderingHeuristic pbVarOrderingHeuristic;
+  bool inversePbVarOrdering;
+  void setPreferredVariableOrdering(VarOrderingHeuristic pbVarOrderingHeuristic, bool inversePbVarOrdering, const PBformula &pb);
+
+  void orAbstract(ADD &dd, Int ddVar);
+  void orAbstractCube(ADD &dd, Set<Int> &ddVars);
+  // tree construction not supported here, just overriding to be useable class and not virtual
+  void constructJoinTree(const PBformula &pb) override;
+  void eagerAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights);
+  void eagerOrAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet); // projected MC
+  Map<Int, ADD> compileClauses(const PBformula &pb);
+  Int getLeastCommonVar(Map<Int, Set<Int>> &varToClauseMap) const;
+  Int getLeastCommonNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const;
+  Int getNextMergeSupportVar(Map<Int, Set<Int>> &varToClauseMap) const;
+  Int getNextMergeNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const;
+  void mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, const Map<Int, Float> &literalWeights);
+  void mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet); // projected MC
+  Set<Int> getClauseExclusiveVarIntersection(Set<Int> &clauseSet, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, Set<Int>> &varToClauseMap);
+public:
+  Float computeModelCount(const PBformula &pb) override;
+  Float computeProjectedModelCount(const PBformula &pb);
+  PBComputeGraphCounter(
+    VarOrderingHeuristic pbVarOrderingHeuristic,
+    bool inversePbVarOrdering,
+    VarOrderingHeuristic ddVarOrderingHeuristic,
+    bool inverseDdVarOrdering,
+    ClauseCompilationHeuristic clauseCompilationHeuristic
+  );
+};
+
+class PBInteractiveCounter : public PBCounter { // interactive counter with caching support
+private:
+  struct ComputeState {
+    /* clause id is used as a mapping to dd (dd Id = clause Id) */
+    Map<Int, ADD> clauseToDdMapState;
+    Map<Int, Set<Int>> clauseToVarMapState;
+    Map<Int, Set<Int>> varToClauseMapState;
+    Map<Int, Set<Int>> clauseToAbstractedVarMapState;
+    Map<Int, Set<Int>> clauseToOrAbstractedVarMapState;
+    Map<Int, Set<Int>> clauseDDToFormulaClauseMapState;
+  }; // used for resuming from cache
+  
+
+protected:
+  Map<Int, int> preferredVariableOrdering; // storing an ordering of pbVar : ordering position
+  VarOrderingHeuristic pbVarOrderingHeuristic;
+  bool inversePbVarOrdering;
+  void setPreferredVariableOrdering(VarOrderingHeuristic pbVarOrderingHeuristic, bool inversePbVarOrdering, const PBformula &pb);
+
+  vector<bool> activeClauses;
+  Map<string, ADD> ddCache;
+  Map<Int, ADD> singleClauseDdMap;
+  Float CACHE_TIME_THRESHOLD = 0.0; // in milliseconds
+  bool restartOnOrderingMisalign = false;
+  Float ORDER_OFFSET_RESTART_THRESHOLD_RATIO = 0.2; // to adjust accordingly
+  bool PRINT_ORDERING_OFFSET = false; // MANUALLY SET to compute and print offset each time, for determining optimal offset threshold ratio
+
+  Float computeMaxOrderingOffsetRatio(const vector<Int>& originalOrdering, const vector<Int>& tentativeOrdering);
+  Float computeMedianOrderingOffsetRatio(const vector<Int>& originalOrdering, const vector<Int>& tentativeOrdering);
+  void orderDdVarsIncrementalWithRestart(const PBformula &pb);
+  void orderDdVarsIncremental(const PBformula &pb);
+  void constructJoinTree(const PBformula &pb) override;
+  void saveDdCache(string &ddIdentifer, ADD &dd);
+  string getDdIdentifierString(Set<Int> &mergedClauseSet, Set<Int> &earlyAbstractedVarSet);
+  string getDdIdentifierString(Set<Int> &mergedClauseSet, Set<Int> &earlyAbstractedVarSet, Set<Int> &earlyOrAbstractedVarSet);
+  vector<Set<Int>> decodeIdentifier(string &ddIdentifier);
+  ComputeState resolveCache(const PBformula &pb, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap);
+  Set<Int> getActiveVariables(const PBformula &pb);
+
+  void orAbstract(ADD &dd, Int ddVar);
+  void orAbstractCube(ADD &dd, Set<Int> &ddVars);
+  void eagerAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights);
+  void eagerOrAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet); // projected MC
+  Map<Int, ADD> compileClauses(const PBformula &pb);
+  Int getLeastCommonVar(Map<Int, Set<Int>> &varToClauseMap) const;
+  Int getLeastCommonNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const;
+  Int getNextAbstractionVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const;
+  Int getNextMergeSupportVar(Map<Int, Set<Int>> &varToClauseMap) const;
+  Int getNextMergeNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const;
+  Set<Int> mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &clauseToAbstractedVarMap, Map<Int, Set<Int>> &clauseDDToFormulaClauseMap, const Map<Int, Float> &literalWeights);
+  Set<Int> mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &clauseToAbstractedVarMap, Map<Int, Set<Int>> &clauseToOrAbstractedVarMap , Map<Int, Set<Int>> &clauseDDToFormulaClauseMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet); // projected MC
+  Set<Int> getClauseExclusiveVarIntersection(Set<Int> &clauseSet, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, Set<Int>> &varToClauseMap);
+
+public:
+  void setAdaptiveRestartMode(bool restartOn);
+  void setDDMgr(Cudd &newMgr);
+  Cudd &getDDMgr();
+  void setCache(Map<string, ADD> &newCache);
+  void clearCache();
+  Map<string, ADD> &getCache();
+  void setActiveClauses(vector<bool> newActiveClauses);
+  Float computeModelCount(const PBformula &pb) override;
+  Float computeProjectedModelCount(const PBformula &pb);
+  PBInteractiveCounter();
+  
+  void setDdVarOrderingHeuristic(VarOrderingHeuristic ddVarOrderingHeuristic);
+  void setInverseDdVarOrdering(bool inverseDdVarOrdering);
+  void setClauseCompilationHeuristic(ClauseCompilationHeuristic clauseCompilationHeuristic);
+  void setPbVarOrderingHeuristic(VarOrderingHeuristic pdVarOrderingHeuristic);
+  void setInversePbVarOrdering(bool inversePbVarOrdering);
 };

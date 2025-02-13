@@ -1,3 +1,8 @@
+/**
+ * Copyright 2025 Grabtaxi Holdings Pte Ltd (GRAB). All rights reserved. 
+ * Use of this source code is governed by an MIT-style license that can be found in the LICENSE file. 
+ */
+
 /* inclusions *****************************************************************/
 
 #include "../interface/counter.hpp"
@@ -73,22 +78,21 @@ void PBCounter::orderDdVars(const PBformula &pb) {
 }
 
 ADD PBCounter::getClauseDd(const PBclause &clause) const {
-
-  if (verbosityLevel > 0) {
-    std::cout << "Compiling clause id: " << clause.clauseId <<std::endl;
-    util::printClause(clause);
-  }
-
   ADD clauseDD;
   if (this->clauseCompilationHeuristic == ClauseCompilationHeuristic::TOPDOWN) {
     clauseDD = getClauseDdTD(clause);
   } else if (this->clauseCompilationHeuristic == ClauseCompilationHeuristic::DYNAMIC) {
     clauseDD = getClauseDdDynamic(clause);
-  } else {
+  } else if (this->clauseCompilationHeuristic == ClauseCompilationHeuristic::BOTTOMUP){
     clauseDD = getClauseDdBU(clause);
-  }
-  if (verbosityLevel > 0) {
-    std::cout << "Completed compiling clause id: " << clause.clauseId <<std::endl;
+  } else if (this->clauseCompilationHeuristic == ClauseCompilationHeuristic::OPT_BOTTOMUP) {
+    PBclause optClause = getOptimizedClauseBU(clause);
+    clauseDD = getClauseDdBU(optClause);
+  } else if (this->clauseCompilationHeuristic == ClauseCompilationHeuristic::OPT_TOPDOWN) {
+    PBclause optClause = getOptimizedClauseTD(clause);
+    clauseDD = getClauseDdTD(optClause);
+  } else {
+    throw MyError("Invalid clause compilation heuristic option, please select valid option.", false);
   }
   return clauseDD;
 }
@@ -102,7 +106,6 @@ ADD PBCounter::getClauseDdTD(const PBclause &clause) const {
   Int firstLit = clause.lits.at(0);
   Int ddVar = pbVarToDdVarMap.at(std::abs(firstLit));
   ADD clauseDd = mgr.addVar(ddVar);
-
   if (firstLit < 0) {
     clauseDd = ~clauseDd;
   }
@@ -114,39 +117,29 @@ ADD PBCounter::getClauseDdTDHelper(const PBclause &clause, Int idx,
                                    Int currentVal,
                                    bool remainCoeffPositive) const {
   if (idx >= (clause.coeffs.size())) { remainCoeffPositive = true; };
-  // checking if coefficients going to be positive for later literals, for early  termination
   if (!remainCoeffPositive && idx < clause.coeffs.size()) {
     if (clause.coeffs.at(idx) >= 0) {
       remainCoeffPositive = true;
     }
   }
-
   if (clause.equals && currentVal > clause.clauseConsVal &&
       remainCoeffPositive) {
-    // exceeded equals, since all positive then can early terminate
     return mgr.addZero();
   } else if (!clause.equals && currentVal >= clause.clauseConsVal &&
              remainCoeffPositive) {
-    // geq constraint satisfied
     return mgr.addOne();
   } else if (idx < clause.lits.size()) {
-    // yet to terminate (reach all variables)
     Int ddVar = pbVarToDdVarMap.at(std::abs(clause.lits.at(idx)));
     Int litCoeff = clause.coeffs.at(idx);
-    // ADD literalDd;
     ADD literalDd = mgr.addVar(ddVar);
-
     if (clause.lits.at(idx) < 0) { literalDd = ~literalDd; };
-
     return literalDd.Ite(
           getClauseDdTDHelper(clause, idx + 1, currentVal + litCoeff,
                               remainCoeffPositive),
           getClauseDdTDHelper(clause, idx + 1, currentVal,
                               remainCoeffPositive));
   } else {
-    // reached end, check if it is equals constraint and satisfied
     if (clause.equals && currentVal == clause.clauseConsVal) { return mgr.addOne(); }; 
-    // reached end, but not satisfied
     return mgr.addZero();
   }
 }
@@ -315,7 +308,7 @@ void PBCounter::projectAbstract(ADD &dd, Int ddVar,
                                 const Map<Int, Float> &literalWeights,
                                 const Set<Int> &projectionVariableSet) {
   Int pbVar = ddVarToPbVarMap.at(ddVar);
-  if (util::isFound(pbVar, projectionVariableSet)) {
+  if (isFound(pbVar, projectionVariableSet)) {
     abstract(dd, ddVar, literalWeights);
   } else {
     dd = dd.OrAbstract(mgr.addVar(ddVar));
@@ -417,13 +410,11 @@ void PBCounter::output(const string &filePath, WeightFormat weightFormat, Output
 
   string temp_filepath = filePath;
   PBformula pb(temp_filepath, weightFormat == WeightFormat::WEIGHTED);
-
   if (preprocessingConfig != PreprocessingConfig::OFF) {
     pb.detectSolver();
     printComment("Simplifying...", 1);
     pb.preprocess(); 
   }
-
   bool unsat = pb.isUnsat();
   printComment("Computing output...", 1);
 
@@ -531,13 +522,13 @@ Float PBMonolithicCounter::computeModelCount(const PBformula &pb) {
     //projected counting
     // project all variables not in projection set
     for (Int ddVar : support) {
-      if (!util::isFound(ddVarToPbVarMap.at(ddVar), pb.getProjectionVariableSet())) {
+      if (!isFound(ddVarToPbVarMap.at(ddVar), pb.getProjectionVariableSet())) {
         projectAbstract(pbDd, ddVar, pb.getLiteralWeights(), pb.getProjectionVariableSet());
       }
     }
     // model count for variables in projection set
     for (Int ddVar : support) {
-      if (util::isFound(ddVarToPbVarMap.at(ddVar), pb.getProjectionVariableSet())) {
+      if (isFound(ddVarToPbVarMap.at(ddVar), pb.getProjectionVariableSet())) {
         abstract(pbDd, ddVar, pb.getLiteralWeights());
       }
     }
@@ -560,7 +551,7 @@ PBMonolithicCounter::PBMonolithicCounter(VarOrderingHeuristic ddVarOrderingHeuri
 void PBLinearCounter::fillProjectablePbVarSets(const vector<PBclause> &clauses) {
   projectablePbVarSets = vector<Set<Int>>(clauses.size(), Set<Int>());
 
-  Set<Int> placedPbVars; 
+  Set<Int> placedPbVars; // cumulates vars placed in projectableCnfVarSets so far
   for (Int clauseIndex = clauses.size() - 1; clauseIndex >= 0; clauseIndex--) {
     Set<Int> clausePbVars = util::getClausePbVars(clauses.at(clauseIndex));
 
@@ -617,7 +608,6 @@ Float PBLinearCounter::computeModelCount(const PBformula &pb) {
 
     Set<Int> projectingDdVars;
     util::differ(projectingDdVars, productDdVars, otherDdVars);
-
     abstractCube(product, projectingDdVars, pb.getLiteralWeights());
     util::unionize(projectedPbVars, getPbVars(projectingDdVars));
 
@@ -694,7 +684,7 @@ void PBNonlinearCounter::fillPbVarSets(const vector<PBclause> &clauses, bool usi
   occurrentPbVarSets = vector<Set<Int>>(clusters.size(), Set<Int>());
   projectablePbVarSets = vector<Set<Int>>(clusters.size(), Set<Int>());
 
-  Set<Int> placedPbVars; 
+  Set<Int> placedPbVars; // cumulates vars placed in projectableCnfVarSets so far
   for (Int clusterIndex = clusters.size() - 1; clusterIndex >= 0; clusterIndex--) {
     Set<Int> clusterPbVars = util::getClusterPbVars(clusters.at(clusterIndex), clauses);
 
@@ -1066,7 +1056,6 @@ Float PBBouquetCounter::computeModelCount(const PBformula &pb) {
   if (pb.isProjected()) {
     showError(PROJECTED_COUNTING_UNSUPPORTED_STR);
   }
-
   return usingTreeClustering ? PBNonlinearCounter::countUsingTreeClustering(pb, usingMinVar) : PBNonlinearCounter::countUsingListClustering(pb, usingMinVar);
 }
 
@@ -1077,4 +1066,1352 @@ PBBouquetCounter::PBBouquetCounter(bool usingTreeClustering, VarOrderingHeuristi
   this->ddVarOrderingHeuristic = ddVarOrderingHeuristic;
   this->inverseDdVarOrdering = inverseDdVarOrdering;
   this->clauseCompilationHeuristic = clauseCompilationHeuristic;
+}
+
+
+/* class PBComputeGraphCounter ****************************************************/
+
+void PBComputeGraphCounter::orAbstract(ADD &dd, Int ddVar) {
+  ADD varDd = mgr.addVar(ddVar);
+  dd = dd.OrAbstract(varDd);
+}
+void PBComputeGraphCounter::orAbstractCube(ADD &dd, Set<Int> &ddVars) {
+  for (Int ddVar : ddVars) {
+    orAbstract(dd, ddVar);
+  }
+}
+
+void PBComputeGraphCounter::constructJoinTree(const PBformula &pb) {
+  ;
+}
+
+void PBComputeGraphCounter::eagerOrAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet) {
+  vector<Int> abstractedVariables;
+  for (auto element : varToClauseMap){
+    Int var = element.first;
+    if (!isFound(var, nonSupportVarSet)) {
+      continue;
+    }
+    Int clauseID = 0;
+    if (element.second.size() == 1) { // var only appears in one clause
+      clauseID = *element.second.begin();
+      ADD varADD = mgr.addVar(pbVarToDdVarMap.at(var));
+      ADD clauseDD = clauseDDMap[clauseID].OrAbstract(varADD);
+      clauseDDMap[clauseID] = clauseDD;
+      abstractedVariables.push_back(var);
+    }
+  }
+  for (Int var : abstractedVariables) {
+    varToClauseMap.erase(var);
+    nonSupportVarSet.erase(var);
+  }
+  for (auto &element : clauseToVarMap) {
+    for (Int var : abstractedVariables) {
+      // erase does not throw exception if element does not exist
+      element.second.erase(var); 
+    }
+  }
+}
+
+void PBComputeGraphCounter::eagerAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights) {
+  // modifies the ADDs in clauseDDMap
+  vector<Int> abstractedVariables;
+  for (auto element : varToClauseMap){
+    Int var = element.first;
+    Int clauseID = 0;
+    if (element.second.size() == 1) { // var only appears in one clause
+      clauseID = *element.second.begin();
+      ADD clauseDD = clauseDDMap[clauseID];
+      abstract(clauseDD, pbVarToDdVarMap.at(var), literalWeights);
+      clauseDDMap[clauseID] = clauseDD;
+      abstractedVariables.push_back(var);
+    }
+  }
+  // remove variable from the varToClauseMap
+  for (Int var : abstractedVariables) {
+    varToClauseMap.erase(var);
+  }
+  // remove variable from clauseToVarMap
+  for (auto &element : clauseToVarMap) {
+    for (Int var : abstractedVariables) {
+      // erase does not throw exception if element does not exist
+      element.second.erase(var); 
+    }
+  }
+}
+
+Map<Int, ADD> PBComputeGraphCounter::compileClauses(const PBformula &pb) {
+  Map<Int, ADD> clauseDDMap;
+  for (const PBclause &clause : pb.getClauses()) {
+    clauseDDMap[clause.clauseId] = getClauseDd(clause);
+  }
+  return clauseDDMap;
+}
+
+Int PBComputeGraphCounter::getLeastCommonNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const {
+  if (nonSupportVarSet.size() == 0) {
+    throw MyError("Cannot call getLeastCommonNonSupportVar with empty nonSupportVarSet", true);
+  }
+  Int lcv = -1;
+  Int minNumClauses = DUMMY_MAX_INT;
+  for (auto element : varToClauseMap) {
+    if (isFound(element.first, nonSupportVarSet)){
+      if (minNumClauses > element.second.size()) {
+        minNumClauses = element.second.size();
+        lcv = element.first;
+      }
+      if (minNumClauses == element.second.size()) {
+        if (element.first < lcv) {
+          lcv = element.first;
+        }
+      }
+    }
+  }
+  return lcv;
+}
+
+Int PBComputeGraphCounter::getLeastCommonVar(Map<Int, Set<Int>> &varToClauseMap) const {
+  Int lcv = -1;
+  Int minNumClauses = DUMMY_MAX_INT;
+  for (auto element : varToClauseMap) {
+    if (minNumClauses > element.second.size()) {
+      minNumClauses = element.second.size();
+      lcv = element.first;
+    }
+    if (minNumClauses == element.second.size()) {
+      if (element.first < lcv) {
+        lcv = element.first;
+      }
+    }
+  }
+  return lcv;
+}
+
+Int PBComputeGraphCounter::getNextMergeNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const {
+  if (nonSupportVarSet.size() == 0) {
+    throw MyError("Cannot call getNextMergeNonSupportVar with empty nonSupportVarSet", true);
+  }
+  if (!preferredVariableOrdering.empty()) {
+    Int cVar;
+    Int cOrderIndex = DUMMY_MAX_INT;
+    Int currentBestVar = -1;
+    Int currentBestVarOrderIndex = DUMMY_MAX_INT;
+    for (auto& element : varToClauseMap) {
+      cVar = element.first;
+      if(isFound(cVar, nonSupportVarSet)){
+        if(currentBestVar == -1) { 
+          currentBestVar = cVar;
+        }
+        cOrderIndex = preferredVariableOrdering.at(cVar);
+        if (cOrderIndex < currentBestVarOrderIndex) {
+          currentBestVar = cVar;
+        }
+      }
+    }
+    return currentBestVar;
+  }
+  return getLeastCommonNonSupportVar(varToClauseMap, nonSupportVarSet);
+}
+
+Int PBComputeGraphCounter::getNextMergeSupportVar(Map<Int, Set<Int>> &varToClauseMap) const {
+  if (!preferredVariableOrdering.empty()) {
+    Int cVar;
+    Int cOrderIndex = DUMMY_MAX_INT;
+    Int currentBestVar = -1;
+    Int currentBestVarOrderIndex = DUMMY_MAX_INT;
+    for (auto& element : varToClauseMap) {
+      cVar = element.first;
+      if(currentBestVar == -1) { 
+        currentBestVar = cVar;
+      }
+      cOrderIndex = preferredVariableOrdering.at(cVar);
+      if (cOrderIndex < currentBestVarOrderIndex) {
+        currentBestVar = cVar;
+      }
+    }
+    return currentBestVar;
+  }
+  return getLeastCommonVar(varToClauseMap);
+}
+
+
+Set<Int> PBComputeGraphCounter::getClauseExclusiveVarIntersection(Set<Int> &clauseSet, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, Set<Int>> &varToClauseMap) {
+  Set<Int> commonVarSet = clauseToVarMap.at(*clauseSet.begin());
+  for (Int clauseID : clauseSet) {
+    commonVarSet = util::setIntersection(commonVarSet, clauseToVarMap.at(clauseID));
+  }
+  vector<Int> nonExclusiveVariables;
+  for (Int var : commonVarSet) {
+    if (clauseSet.size() != varToClauseMap.at(var).size()) {
+      nonExclusiveVariables.push_back(var);
+      continue;
+    }
+    bool match = true;
+    for (Int candidateClauseID : varToClauseMap.at(var)) {
+      if (!isFound(candidateClauseID, clauseSet)) {
+        match = false;
+      }
+    }
+    if (!match) { nonExclusiveVariables.push_back(var); }
+  }
+  // remove non exclusive elements
+  for (Int var : nonExclusiveVariables) {
+    commonVarSet.erase(var);
+  }
+  return commonVarSet;
+}
+
+void PBComputeGraphCounter::mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, const Map<Int, Float> &literalWeights) {
+  ADD dd = mgr.addOne();
+  Set<Int> clauseSet = varToClauseMap.at(targetPBVar);
+  for (Int clauseID : clauseSet) {
+    dd &= clauseDDMap[clauseID];
+  }
+  // find common variables apart from target pb var (that also does not exist elsewhere)
+  Set<Int> commonExVarSet = getClauseExclusiveVarIntersection(clauseSet, clauseToVarMap, varToClauseMap); //common vars should include target pb var
+  // project out all common such common variables
+  Set<Int> ddVarSet;
+  for (Int pbVar : commonExVarSet) {
+    ddVarSet.insert(pbVarToDdVarMap.at(pbVar));
+  }
+  abstractCube(dd, ddVarSet, literalWeights);
+  // add dd with variable set to mapping
+  // delete the projected out vars from the map and update remaining vars
+  for (Int pbVar : commonExVarSet) {
+    varToClauseMap.erase(pbVar);
+  }
+  // erase the entire clause and reuse an old clause id for the merged dd
+  // get one clause id to give dd
+  Int newDDClauseID = *clauseSet.begin();
+  Set<Int> newVarSet;
+  for (Int clauseID : clauseSet) {
+    for (Int pbVar : clauseToVarMap.at(clauseID)) {
+      if (!isFound(pbVar, commonExVarSet)) {
+        newVarSet.insert(pbVar);
+      }
+    }
+    clauseToVarMap.erase(clauseID);
+    clauseDDMap.erase(clauseID);
+  }
+  clauseDDMap[newDDClauseID] = dd;
+  clauseToVarMap[newDDClauseID] = newVarSet;
+  // update the var clause map of the non exclusive variables
+  for (Int pbVar : newVarSet) {
+    for (Int clauseID : clauseSet) {
+      if ((clauseID != newDDClauseID) && isFound(clauseID, varToClauseMap.at(pbVar))) {
+        varToClauseMap.at(pbVar).erase(clauseID);
+      }
+    }
+    varToClauseMap.at(pbVar).insert(newDDClauseID);
+  }
+}
+
+void PBComputeGraphCounter::mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet) {
+  bool processedNonSupport = (nonSupportVarSet.size() == 0);
+  ADD dd = mgr.addOne();
+  Set<Int> clauseSet = varToClauseMap.at(targetPBVar);
+  for (Int clauseID : clauseSet) {
+    dd &= clauseDDMap[clauseID];
+  }
+  // find common variables apart from target pb var (that also does not exist elsewhere)
+  Set<Int> commonExVarSet = getClauseExclusiveVarIntersection(clauseSet, clauseToVarMap, varToClauseMap); //common vars should include target pb var
+  // project out all common such common variables
+  if (!processedNonSupport) {
+    Set<Int> nonSupportcommonExVarSet;
+    for (Int pbVar : commonExVarSet) {
+      if (isFound(pbVar, nonSupportVarSet)) {
+        nonSupportcommonExVarSet.insert(pbVar);
+      }
+    }
+    commonExVarSet = nonSupportcommonExVarSet;
+  }
+
+  Set<Int> ddVarSet;
+  for (Int pbVar : commonExVarSet) {
+    if (!processedNonSupport) {
+      if (isFound(pbVar, nonSupportVarSet)) {
+        ddVarSet.insert(pbVarToDdVarMap.at(pbVar));
+      }
+    } else {
+      ddVarSet.insert(pbVarToDdVarMap.at(pbVar));
+    }
+  }
+  if (!processedNonSupport) {
+    orAbstractCube(dd, ddVarSet);
+  } else {
+    abstractCube(dd, ddVarSet, literalWeights);
+  }
+  // add dd with variable set to mapping
+  // delete the projected out vars from the map and update remaining vars
+  for (Int pbVar : commonExVarSet) {
+    varToClauseMap.erase(pbVar);
+    if (isFound(pbVar, nonSupportVarSet)) {
+      nonSupportVarSet.erase(pbVar);
+    }
+  }
+  // erase the entire clause and reuse an old clause id for the merged dd
+  // get one clause id to give dd
+  Int newDDClauseID = *clauseSet.begin();
+  Set<Int> newVarSet;
+  for (Int clauseID : clauseSet) {
+    for (Int pbVar : clauseToVarMap.at(clauseID)) {
+      if (!isFound(pbVar, commonExVarSet)) {
+        newVarSet.insert(pbVar);
+      }
+    }
+    clauseToVarMap.erase(clauseID);
+    clauseDDMap.erase(clauseID);
+  }
+  clauseDDMap[newDDClauseID] = dd;
+  clauseToVarMap[newDDClauseID] = newVarSet;
+  // update the var clause map of the non exclusive variables
+  for (Int pbVar : newVarSet) {
+    for (Int clauseID : clauseSet) {
+      if ((clauseID != newDDClauseID) && isFound(clauseID, varToClauseMap.at(pbVar))) {
+        varToClauseMap.at(pbVar).erase(clauseID);
+      }
+    }
+    varToClauseMap.at(pbVar).insert(newDDClauseID);
+  }
+}
+
+// for setting custom merge order in compute graph counter
+void PBComputeGraphCounter::setPreferredVariableOrdering(VarOrderingHeuristic pbVarOrderingHeuristic, bool inversePbVarOrdering, const PBformula &pb) {
+  switch (pbVarOrderingHeuristic) {
+    case VarOrderingHeuristic::MINFILL: {
+      preferredVariableOrdering.clear();
+      vector<Int> varOrderVector = pb.getVarOrdering(pbVarOrderingHeuristic, inversePbVarOrdering);
+      for (int i = 0; i < varOrderVector.size(); i++) {
+        preferredVariableOrdering[varOrderVector.at(i)] = i;
+      }
+      break;
+    }
+    default: {
+      // showError("Unaccepted variable merge ordering for compute graph counter.");
+      break;
+    }
+  }
+}
+
+Float PBComputeGraphCounter::computeModelCount(const PBformula &pb) {
+  // setting the same for both projected and non projected
+  setPreferredVariableOrdering(pbVarOrderingHeuristic, inversePbVarOrdering, pb);
+  if (pb.isProjected()) { return computeProjectedModelCount(pb); }
+  // set the decision diagram variable ordering
+  orderDdVars(pb);
+  // get the constraint graph
+  MultiTypeGraph interactionGraph = pb.getInteractionGraph();
+  Map<Int, Set<Int>> variableToClauseMap = interactionGraph.getVarToClauseMap();
+  Map<Int, Set<Int>> clauseToVariableMap = interactionGraph.getClauseToVarMap();
+  // get ADD for each clause
+  Map<Int, ADD> clauseDDMap = compileClauses(pb);
+  Set<Int> processVarSet;
+  for (auto element : variableToClauseMap) {
+    processVarSet.insert(element.first);
+  }
+  eagerAbstraction(clauseDDMap, variableToClauseMap, clauseToVariableMap, pb.getLiteralWeights());
+  while (variableToClauseMap.size() > 0) {
+    Int targetPBVar = getNextMergeSupportVar(variableToClauseMap); // take preferred ordering if there is one, otherwise getLeastCommonVar
+    mergeUpdateClauses(targetPBVar, variableToClauseMap, clauseToVariableMap, clauseDDMap, pb.getLiteralWeights());
+  }
+
+  ADD pbDd = mgr.constant(1);
+  if (clauseDDMap.size() > 1) {
+    Int newClauseId = clauseDDMap.begin()->first;
+    for (auto &element : clauseDDMap) {
+      pbDd *= element.second;
+    }
+    clauseDDMap[newClauseId] = pbDd;
+    for (auto &element : clauseDDMap) {
+      if (element.first != newClauseId) {
+        clauseDDMap.erase(element.first);
+      }
+    }
+  }
+  // getting the model count from the constant decision diagram
+  pbDd = (clauseDDMap.begin()->second);
+  Float modelCount = diagram::countConstDdFloat(pbDd);
+
+  // adjust model count for simplifications during preprocessing
+  modelCount = util::adjustModelCountCG(modelCount, pb.getLiteralWeights(), pb.getInferredAssignments());
+  modelCount = util::adjustModelCountCGMissingVar(modelCount, pb.getDeclaredVarCount(), pb.getLiteralWeights(), pb.getInferredAssignments(), processVarSet);
+
+  return modelCount;
+}
+
+Float PBComputeGraphCounter::computeProjectedModelCount(const PBformula &pb) {
+  // set the decision diagram variable ordering
+  orderDdVars(pb);
+
+  Set<Int> projectionSupportVarSet = pb.getProjectionVariableSet();
+  // get the constraint graph
+  MultiTypeGraph interactionGraph = pb.getInteractionGraph();
+  Map<Int, Set<Int>> variableToClauseMap = interactionGraph.getVarToClauseMap();
+  Map<Int, Set<Int>> clauseToVariableMap = interactionGraph.getClauseToVarMap();
+  // get ADD for each clause
+  Map<Int, ADD> clauseDDMap = compileClauses(pb);
+
+  Set<Int> nonSupportVarSet;
+  Set<Int> processVarSet;
+  for (auto element : variableToClauseMap) {
+    processVarSet.insert(element.first);
+    if (!isFound(element.first, projectionSupportVarSet)) {
+      nonSupportVarSet.insert(element.first);
+    }
+  }
+  eagerOrAbstraction(clauseDDMap, variableToClauseMap, clauseToVariableMap, pb.getLiteralWeights(), nonSupportVarSet);
+
+  while (variableToClauseMap.size() > 0) {
+    Int targetPBVar = -1;
+    if (nonSupportVarSet.size() > 0) {
+      targetPBVar = getNextMergeNonSupportVar(variableToClauseMap, nonSupportVarSet);
+    } else {
+      targetPBVar = getNextMergeSupportVar(variableToClauseMap);
+    }
+    // merge ADDs and project out variable
+    mergeUpdateClauses(targetPBVar, variableToClauseMap, clauseToVariableMap, clauseDDMap, pb.getLiteralWeights(), nonSupportVarSet);
+  }
+
+  ADD pbDd = mgr.constant(1);
+  if (clauseDDMap.size() > 1) {
+    Int newClauseId = clauseDDMap.begin()->first;
+    for (auto &element : clauseDDMap) {
+      pbDd *= element.second;
+    }
+    clauseDDMap[newClauseId] = pbDd;
+    for (auto &element : clauseDDMap) {
+      if (element.first != newClauseId) {
+        clauseDDMap.erase(element.first);
+      }
+    }
+  }
+  // getting the model count from the constant decision diagram
+  pbDd = (clauseDDMap.begin()->second);
+  Float modelCount = diagram::countConstDdFloat(pbDd);
+
+  // adjust model count for simplifications during preprocessing
+  modelCount = util::adjustProjectedModelCountCG(modelCount, pb.getLiteralWeights(), pb.getInferredAssignments(), projectionSupportVarSet);
+  modelCount = util::adjustProjectedModelCountCGMissingVar(modelCount, pb.getDeclaredVarCount(), pb.getLiteralWeights(), pb.getInferredAssignments(), processVarSet, projectionSupportVarSet);
+
+  return modelCount;
+}
+
+PBComputeGraphCounter::PBComputeGraphCounter(VarOrderingHeuristic pbVarOrderingHeuristic, bool inversePbVarOrdering, VarOrderingHeuristic ddVarOrderingHeuristic, bool inverseDdVarOrdering, ClauseCompilationHeuristic clauseCompilationHeuristic) {
+  this->pbVarOrderingHeuristic = pbVarOrderingHeuristic;
+  this->inversePbVarOrdering = inversePbVarOrdering;
+  this->ddVarOrderingHeuristic = ddVarOrderingHeuristic;
+  this->inverseDdVarOrdering = inverseDdVarOrdering;
+  this->clauseCompilationHeuristic = clauseCompilationHeuristic;
+}
+
+/* class PBInteractiveCounter ****************************************************/
+
+//protected functions
+Float PBInteractiveCounter::computeMaxOrderingOffsetRatio(const vector<Int>& originalOrdering, const vector<Int>& tentativeOrdering) {
+  // getting the max offset variable between the two ordering, relative to length of ordering
+  Int var = -1;
+  Int maxOffset = -1;
+
+  vector<Int> offsets;
+  offsets.clear();
+
+  Map<Int, Int> origVarToOrderIndexMap;
+  for (Int i = 0; i < originalOrdering.size(); i++) {
+    origVarToOrderIndexMap[originalOrdering.at(i)] = i;
+  }
+  for (Int i = 0; i < tentativeOrdering.size(); i++) {
+    var = tentativeOrdering.at(i);
+    if(util::isFound(var, origVarToOrderIndexMap)){
+      Int offset = abs(origVarToOrderIndexMap.at(var) - i);
+      offsets.push_back(offset);
+      if(maxOffset < offset) {
+        maxOffset = offset;
+      }
+    }
+  }
+
+  // std::cout << "[STATS] AllVariableDffsets: ";
+  // for (Int offs : offsets) {
+  //   std::cout << (Float) offs / (Float)originalOrdering.size() << " ";
+  // }
+  // std::cout << std::endl;
+
+  // looking at the max offset for now, but other metrics should also be possible i.e. median
+  Float maxOffsetRatio = (Float) maxOffset / (Float) originalOrdering.size();
+  return maxOffsetRatio;
+}
+
+Float PBInteractiveCounter::computeMedianOrderingOffsetRatio(const vector<Int>& originalOrdering, const vector<Int>& tentativeOrdering) {
+  // getting the max offset variable between the two ordering, relative to length of ordering
+  Int var = -1;
+  Int medianOffset = -1;
+
+  vector<Int> offsets;
+  offsets.clear();
+
+  Map<Int, Int> origVarToOrderIndexMap;
+  for (Int i = 0; i < originalOrdering.size(); i++) {
+    origVarToOrderIndexMap[originalOrdering.at(i)] = i;
+  }
+  for (Int i = 0; i < tentativeOrdering.size(); i++) {
+    var = tentativeOrdering.at(i);
+    if(util::isFound(var, origVarToOrderIndexMap)){
+      Int offset = abs(origVarToOrderIndexMap.at(var) - i);
+      offsets.push_back(offset);
+    }
+  }
+
+  std::sort(offsets.begin(), offsets.end());
+  if(offsets.empty()) {
+    throw MyError("Empty offsets, no variable ordering?", true);
+  }
+  int medianIdx = (int) ((float) offsets.size() / 2.0);
+  Float medianOffsetRatio = (Float) offsets.at(medianIdx) / (Float) originalOrdering.size();
+  return medianOffsetRatio;
+}
+
+void PBInteractiveCounter::orderDdVarsIncrementalWithRestart(const PBformula &pb) {
+  PBformula activePb;
+  Set<Int> activeVarSet = getActiveVariables(pb);
+  vector<PBclause> allPBClauses = pb.getClauses();
+  for (int i = 0; i < allPBClauses.size(); i++) {
+    if (activeClauses.at(i)) {
+      activePb.insertClause(allPBClauses.at(i)); // only insert if active clause
+    }
+  }
+  vector<Int> newPbVarOrdering = activePb.getVarOrdering(ddVarOrderingHeuristic, inverseDdVarOrdering);
+
+  if (ddVarToPbVarMap.empty()) {
+    ddVarToPbVarMap = newPbVarOrdering;
+    for (Int ddVar = 0; ddVar < ddVarToPbVarMap.size(); ddVar++) {
+      Int pbVar = ddVarToPbVarMap.at(ddVar);
+      pbVarToDdVarMap[pbVar] = ddVar;
+      mgr.addVar(ddVar); // creates ddVar-th ADD var
+    }
+  } else {
+    bool restart = false;
+    Float offsetRatio = 0;
+    if (restartOnOrderingMisalign || PRINT_ORDERING_OFFSET) {
+      // determine if ordering deviated enough to restart
+      vector<Int> tempPreviousOrdering;
+      for (Int var : ddVarToPbVarMap) {
+        if (isFound(var, activeVarSet)) {
+          tempPreviousOrdering.push_back(var);
+        }
+      }
+      offsetRatio = computeMedianOrderingOffsetRatio(tempPreviousOrdering, newPbVarOrdering);
+      // offsetRatio = computeMaxOrderingOffsetRatio(tempPreviousOrdering, newPbVarOrdering);
+      if (PRINT_ORDERING_OFFSET) {
+        std::cout << "[STATS] Current step median variable ordering offset ratio: " << offsetRatio << std::endl;
+      }
+    }
+    // deviation that has one variable being offset by x percent of length
+    if (restartOnOrderingMisalign && offsetRatio >= ORDER_OFFSET_RESTART_THRESHOLD_RATIO) {
+      restart = true;
+    }
+    if (restart) {
+      singleClauseDdMap.clear();
+      ddCache.clear();
+      mgr = Cudd(); // new manager
+      ddVarToPbVarMap.clear();
+      pbVarToDdVarMap.clear();
+      ddVarToPbVarMap = newPbVarOrdering;
+      for (Int ddVar = 0; ddVar < ddVarToPbVarMap.size(); ddVar++) {
+        Int pbVar = ddVarToPbVarMap.at(ddVar);
+        pbVarToDdVarMap[pbVar] = ddVar;
+        mgr.addVar(ddVar); // creates ddVar-th ADD var
+      }
+    } else {
+      for (Int pbVar : newPbVarOrdering) {
+        if (!isFound(pbVar, pbVarToDdVarMap)) {
+          // ddVar started from 0
+          Int ddVar = ddVarToPbVarMap.size();
+          ddVarToPbVarMap.push_back(pbVar);
+          pbVarToDdVarMap[pbVar] = ddVar;
+          mgr.addVar(ddVar); // creates ddVar-th ADD var
+        }
+      }
+    }
+  }
+}
+// old implementaion
+void PBInteractiveCounter::orderDdVarsIncremental(const PBformula &pb) {
+  vector<Int> newPbVarOrdering = pb.getVarOrdering(ddVarOrderingHeuristic, inverseDdVarOrdering);
+  for (Int pbVar : newPbVarOrdering) {
+    if (!isFound(pbVar, pbVarToDdVarMap)) {
+      // ddVar started from 0
+      Int ddVar = ddVarToPbVarMap.size();
+      ddVarToPbVarMap.push_back(pbVar);
+      pbVarToDdVarMap[pbVar] = ddVar;
+      mgr.addVar(ddVar); // creates ddVar-th ADD var
+    }
+  }
+}
+void PBInteractiveCounter::constructJoinTree(const PBformula &pb) {
+  ;
+}
+void PBInteractiveCounter::saveDdCache(string &ddIdentifer, ADD &dd) {
+  ddCache[ddIdentifer] = dd;
+}
+string PBInteractiveCounter::getDdIdentifierString(Set<Int> &mergedClauseSet, Set<Int> &earlyAbstractedVarSet) {
+  // c1-c2-c3|v1-v2-v3 style identifier
+  std::stringstream ss;
+  vector<Int> elements(mergedClauseSet.begin(), mergedClauseSet.end());
+  sort(elements.begin(), elements.end());
+  for (int i = 0; i < elements.size(); i++) {
+    ss << to_string(elements.at(i));
+    if (i + 1 != elements.size()) {
+      ss << "-";
+    }
+  }
+  ss << "|";
+  // elements.clear();
+  elements = vector<Int>(earlyAbstractedVarSet.begin(), earlyAbstractedVarSet.end());
+  sort(elements.begin(), elements.end());
+  for (int i = 0; i < elements.size(); i++) {
+    ss << to_string(elements.at(i));
+    if (i + 1 != elements.size()) {
+      ss << "-";
+    }
+  }
+  return ss.str();
+}
+string PBInteractiveCounter::getDdIdentifierString(Set<Int> &mergedClauseSet, Set<Int> &earlyAbstractedVarSet, Set<Int> &earlyOrAbstractedVarSet) {
+  // c1-c2-c3|v1-v2-v3|x1-x2-x3 style identifier (v in support (projection set), x not in )
+  std::stringstream ss;
+  vector<Int> elements(mergedClauseSet.begin(), mergedClauseSet.end());
+  sort(elements.begin(), elements.end());
+  for (int i = 0; i < elements.size(); i++) {
+    ss << to_string(elements.at(i));
+    if (i + 1 != elements.size()) {
+      ss << "-";
+    }
+  }
+  ss << "|";
+  // elements.clear();
+  elements = vector<Int>(earlyAbstractedVarSet.begin(), earlyAbstractedVarSet.end());
+  sort(elements.begin(), elements.end());
+  for (int i = 0; i < elements.size(); i++) {
+    ss << to_string(elements.at(i));
+    if (i + 1 != elements.size()) {
+      ss << "-";
+    }
+  }
+  ss << "|";
+  elements = vector<Int>(earlyOrAbstractedVarSet.begin(), earlyOrAbstractedVarSet.end());
+  sort(elements.begin(), elements.end());
+  for (int i = 0; i < elements.size(); i++) {
+    ss << to_string(elements.at(i));
+    if (i + 1 != elements.size()) {
+      ss << "-";
+    }
+  }
+  return ss.str();
+}
+vector<Set<Int>> PBInteractiveCounter::decodeIdentifier(string &ddIdentifier) {
+  vector<Set<Int>> decodedData;
+  int numSep = 0; // number of seperators processed
+  string currentString = "";
+  decodedData.push_back(Set<Int>());
+  for (int i = 0; i < ddIdentifier.size(); i++) {
+    if (ddIdentifier.at(i) == '|') {
+      if (currentString != "") {
+        decodedData.at(numSep).insert(std::stol(currentString));
+      }
+      numSep += 1;
+      currentString = "";
+      decodedData.push_back(Set<Int>());
+    } else if (ddIdentifier.at(i) == '-') {
+      decodedData.at(numSep).insert(std::stol(currentString));
+      currentString = "";
+    } else {
+      currentString += ddIdentifier.at(i);
+    }
+  }
+  // last string without any delimiters following
+  if (currentString != "") {
+    decodedData.at(numSep).insert(std::stol(currentString));
+  }
+  return decodedData;
+}
+PBInteractiveCounter::ComputeState PBInteractiveCounter::resolveCache(const PBformula &pb, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap) {
+  // find the set of active variables
+
+  std::cout << "Number of cache entry: " << ddCache.size() << std::endl;
+  TimePoint timer = util::getTimePoint();
+
+  Set<Int> activeClauseSet;
+  Set<Int> activeVarSet;
+  for (PBclause const &clause : pb.getClauses()) {
+    if (activeClauses.at(clause.clauseId - 1)) {
+      for (Int lit : clause.lits) {
+        activeVarSet.insert(abs(lit));
+      }
+      activeClauseSet.insert(clause.clauseId);
+    }
+  }
+  Set<Int> projectionSupportVarSet;
+  if (pb.isProjected()) {
+    projectionSupportVarSet = pb.getProjectionVariableSet();
+  } else {
+    projectionSupportVarSet = activeVarSet; // if not projected model counting, then all variable is support
+  }
+  // loop through cache id strings and figure out if resumable
+  vector<ADD> candidateDds;
+  vector<Set<Int>> candidateDdClauseSet;
+  vector<Set<Int>> candidateDdAbstractedVariables;
+  vector<Set<Int>> candidateDdOrAbstractedVariables;
+  vector<string> deletionIdentifier;
+
+  vector<Set<Int>> currentIdentifierData;
+  Set<Int> cachedDDClauseSet;
+  Set<Int> cachedDDAbstractedVarSet;
+  Set<Int> cachedDDOrAbstractedVarSet;
+
+  for (auto &element : ddCache) {
+    string currentIdentifier = element.first;
+    ADD currentDd = element.second;
+    currentIdentifierData.clear();
+    currentIdentifierData = decodeIdentifier(currentIdentifier);
+    cachedDDClauseSet.clear();
+    cachedDDClauseSet = currentIdentifierData.at(0);
+    cachedDDAbstractedVarSet.clear();
+    cachedDDAbstractedVarSet = currentIdentifierData.at(1);
+    cachedDDOrAbstractedVarSet.clear();
+    cachedDDOrAbstractedVarSet = currentIdentifierData.at(2);
+    
+    if (util::isSubset(cachedDDClauseSet, activeClauseSet)) {
+      // check if variables that are early projected out are compatible (i.e. new constraints added later that reintroduced projected out variables)
+      bool compatibleProjection = true;
+      for (Int orAbstractedVar : cachedDDOrAbstractedVarSet) {
+        if (projectionSupportVarSet.find(orAbstractedVar) != projectionSupportVarSet.end()) {
+          // checking compatibility with specified projection set
+          compatibleProjection = false;
+          break;
+        }
+      }
+      for (Int abstractedVar : cachedDDAbstractedVarSet) {
+        if (projectionSupportVarSet.find(abstractedVar) == projectionSupportVarSet.end()) {
+          compatibleProjection = false;
+          break;
+        }
+      }
+      // check if abstracted variable here appears in clauses that current candidate did not cover, but still active (i.e. added new clause later on with same variable)
+      for (Int clauseId : activeClauseSet) {
+        if (cachedDDClauseSet.find(clauseId) == cachedDDClauseSet.end()) {
+          for (Int var : clauseToVarMap.at(clauseId)) {
+            if ((cachedDDAbstractedVarSet.find(var) != cachedDDAbstractedVarSet.end()) || 
+            (cachedDDOrAbstractedVarSet.find(var) != cachedDDOrAbstractedVarSet.end())) {
+              compatibleProjection = false;
+              break;
+            }
+          }
+        }
+        if (!compatibleProjection) {
+          break;
+        }
+      } 
+      if (compatibleProjection) {
+        candidateDds.push_back(currentDd);
+        // also push back the early abstracted variables to vector
+        candidateDdAbstractedVariables.push_back(cachedDDAbstractedVarSet);
+        candidateDdClauseSet.push_back(cachedDDClauseSet);
+        candidateDdOrAbstractedVariables.push_back(cachedDDOrAbstractedVarSet);
+      }
+    }
+  }
+  // retrieved candidates, select subset of dd with largest non-intersecting clause coverage
+  // sort dds by descending order of number of clauses represented
+  vector<Int> sortingVec(candidateDdClauseSet.size());
+  for (Int i = 0; i < candidateDdClauseSet.size(); i++) {
+    sortingVec.push_back(i);
+  }
+  std::sort(sortingVec.begin(), sortingVec.end(), [&](Int i, Int j) { 
+    return candidateDdClauseSet.at(i).size() > candidateDdClauseSet.at(j).size(); 
+  });
+  // traverse in decending order of clauses size to get filtered candidate dd list
+  vector<Int> filteredDdIndices;
+  Set<Int> coveredClauses;
+  vector<Set<Int>> filteredDdVarSet;
+  for (Int index : sortingVec) {
+    bool noCommonClause = true;
+    if (!candidateDdClauseSet.at(index).empty() && !coveredClauses.empty()) {
+      Int indvTotalSize = candidateDdClauseSet.at(index).size() + coveredClauses.size();
+      if (util::setUnion(candidateDdClauseSet.at(index), coveredClauses).size() < indvTotalSize) {
+        noCommonClause = false;
+      }
+    }
+    if (noCommonClause) {
+      bool abstractedVariableCompatible = true;
+      Set<Int> currentCandidateVariableSet = Set<Int>(); // setting to empty set
+      for (Int candidateClauseId : candidateDdClauseSet.at(index)) {
+        currentCandidateVariableSet = util::setUnion(currentCandidateVariableSet, clauseToVarMap.at(candidateClauseId));
+      }
+      Set<Int> currentAbstractedVariableSet = candidateDdAbstractedVariables.at(index);
+      Set<Int> currentOrAbstractedVariableSet = candidateDdOrAbstractedVariables.at(index);
+
+      // pairwise comparison against all previously selected cached dds
+      for (Int filteredIndex : filteredDdIndices) {
+        // get variable set
+        Set<Int> selectedDdVariableSet;
+        for (Int clauseId : candidateDdClauseSet.at(filteredIndex)) {
+          selectedDdVariableSet = util::setUnion(selectedDdVariableSet, clauseToVarMap.at(clauseId));
+        }
+        Set<Int> selectedDdAbstractedVariableSet = candidateDdAbstractedVariables.at(filteredIndex);
+        Set<Int> selectedDdOrAbstractedVariableSet = candidateDdOrAbstractedVariables.at(filteredIndex);
+        // early abstraction/projection compatibility check -- either both projected or both not projected
+        for (Int var : currentAbstractedVariableSet) {
+          if ((selectedDdVariableSet.find(var) != selectedDdVariableSet.end()) && 
+          !(selectedDdAbstractedVariableSet.find(var) != selectedDdAbstractedVariableSet.end())) {
+            abstractedVariableCompatible = false;
+            break;
+          }
+        }
+        for (Int var : selectedDdAbstractedVariableSet) {
+          if ((currentCandidateVariableSet.find(var) != currentCandidateVariableSet.end()) && 
+          !(currentAbstractedVariableSet.find(var) != currentAbstractedVariableSet.end())) {
+            abstractedVariableCompatible = false;
+            break;
+          }
+        }
+        for (Int var : currentOrAbstractedVariableSet) {
+          if ((selectedDdVariableSet.find(var) != selectedDdVariableSet.end()) &&
+          !(selectedDdOrAbstractedVariableSet.find(var) != selectedDdOrAbstractedVariableSet.end())) {
+            abstractedVariableCompatible = false;
+            break;
+          }
+        }
+        for (Int var : selectedDdOrAbstractedVariableSet) {
+          if ((currentCandidateVariableSet.find(var) != currentCandidateVariableSet.end()) && 
+          !(currentOrAbstractedVariableSet.find(var) != currentOrAbstractedVariableSet.end())) {
+            abstractedVariableCompatible = false;
+            break;
+          }
+        }
+        if (!abstractedVariableCompatible) {
+          break;
+        }
+      }
+      if (abstractedVariableCompatible) {
+        filteredDdIndices.push_back(index);
+        filteredDdVarSet.push_back(currentCandidateVariableSet);
+        for (Int clauseId : candidateDdClauseSet.at(index)){
+          coveredClauses.insert(clauseId);
+        }
+      }
+    }
+  }
+  std::cout << "Retrieved " << filteredDdIndices.size() << " dds from cache" << std::endl;
+  // starting from empty maps, rebuilding state from cache
+  ComputeState rebuiltState;
+  for (Int i = 0; i < filteredDdIndices.size(); i++) {
+    Int index = filteredDdIndices.at(i);
+    ADD selectedDd = candidateDds.at(index);
+    Set<Int> selectedDdClauseSet = candidateDdClauseSet.at(index);
+    Int newClauseId = *selectedDdClauseSet.begin();
+    rebuiltState.clauseToDdMapState[newClauseId] = selectedDd;
+    for (Int var : filteredDdVarSet.at(i)){
+      if (!(candidateDdAbstractedVariables.at(index).find(var) != candidateDdAbstractedVariables.at(index).end()) && 
+      !(candidateDdOrAbstractedVariables.at(index).find(var) != candidateDdOrAbstractedVariables.at(index).end())) {
+        rebuiltState.clauseToVarMapState[newClauseId].insert(var);
+      }
+    }
+    rebuiltState.clauseToAbstractedVarMapState[newClauseId] = candidateDdAbstractedVariables.at(index);
+    rebuiltState.clauseToOrAbstractedVarMapState[newClauseId] = candidateDdOrAbstractedVariables.at(index);
+    rebuiltState.clauseDDToFormulaClauseMapState[newClauseId] = selectedDdClauseSet;
+
+    for (Int var : filteredDdVarSet.at(i)) {
+      if (!(candidateDdAbstractedVariables.at(index).find(var) != candidateDdAbstractedVariables.at(index).end()) && 
+        !(candidateDdOrAbstractedVariables.at(index).find(var) != candidateDdOrAbstractedVariables.at(index).end())
+      ) {
+        if (rebuiltState.varToClauseMapState.find(var) == rebuiltState.varToClauseMapState.end()) {
+          rebuiltState.varToClauseMapState[var] = Set<Int>(); 
+        }
+        rebuiltState.varToClauseMapState.at(var).insert(newClauseId);
+      }
+    }
+  }
+  // insert those (mappings) that are not in covered clauses (not resumed)
+  for (Int clauseId : activeClauseSet) {
+    if (coveredClauses.find(clauseId) == coveredClauses.end()) {
+      rebuiltState.clauseToDdMapState[clauseId] = clauseDDMap.at(clauseId);
+      rebuiltState.clauseToVarMapState[clauseId] = clauseToVarMap.at(clauseId);
+      rebuiltState.clauseToAbstractedVarMapState[clauseId] = Set<Int>();
+      rebuiltState.clauseToOrAbstractedVarMapState[clauseId] = Set<Int>();
+      rebuiltState.clauseDDToFormulaClauseMapState[clauseId] = Set<Int>({clauseId});
+      for (Int var : clauseToVarMap.at(clauseId)) {
+        if (rebuiltState.varToClauseMapState.find(var) == rebuiltState.varToClauseMapState.end()) { rebuiltState.varToClauseMapState[var] = Set<Int>(); }
+        rebuiltState.varToClauseMapState.at(var).insert(clauseId);
+      }
+    }
+  }
+  Float timeElapsedMilli = util::getMilliseconds(timer);
+  std::cout << "Cache retrieval time spent: " << timeElapsedMilli / 1000.0 << " s" << std::endl;
+  return rebuiltState;
+}
+Set<Int> PBInteractiveCounter::getActiveVariables(const PBformula &pb) {
+  Set<Int> activeVariables;
+  for (PBclause const &clause : pb.getClauses()) {
+    if (activeClauses.at(clause.clauseId - 1)) {
+      for (Int lit : clause.lits) {
+        activeVariables.insert(abs(lit));
+      }
+    }
+  }
+  return activeVariables;
+}
+void PBInteractiveCounter::orAbstract(ADD &dd, Int ddVar) {
+  ADD varDd = mgr.addVar(ddVar);
+  dd = dd.OrAbstract(varDd);
+}
+void PBInteractiveCounter::orAbstractCube(ADD &dd, Set<Int> &ddVars) {
+  for (Int ddVar : ddVars) {
+    orAbstract(dd, ddVar);
+  }
+}
+void PBInteractiveCounter::eagerAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights) {
+  ;
+}
+void PBInteractiveCounter::eagerOrAbstraction(Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet){
+  ;
+}
+Map<Int, ADD> PBInteractiveCounter::compileClauses(const PBformula &pb) {
+  Map<Int, ADD> activeClauseDDMap;
+  for (const PBclause &clause : pb.getClauses()) {
+    if (activeClauses.at(clause.clauseId - 1)) {
+      // if is active clause
+      if (isFound(clause.clauseId, singleClauseDdMap)) {
+        activeClauseDDMap[clause.clauseId] = mgr.addOne() * singleClauseDdMap.at(clause.clauseId);
+      } else {
+        ADD clauseDD = getClauseDd(clause);
+        activeClauseDDMap[clause.clauseId] = mgr.addOne() * clauseDD;
+        singleClauseDdMap[clause.clauseId] = mgr.addOne() * clauseDD; // save cache
+      }
+    }
+  }
+  return activeClauseDDMap;
+}
+Int PBInteractiveCounter::getLeastCommonVar(Map<Int, Set<Int>> &varToClauseMap) const {
+  Int lcv = -1;
+  Int minNumClauses = DUMMY_MAX_INT;
+  for (auto element : varToClauseMap) {
+    if (minNumClauses > element.second.size()) {
+      minNumClauses = element.second.size();
+      lcv = element.first;
+    }
+    if (minNumClauses == element.second.size()) {
+      if (element.first < lcv) {
+        lcv = element.first;
+      }
+    }
+  }
+  return lcv;
+}
+Int PBInteractiveCounter::getLeastCommonNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const {
+  if (nonSupportVarSet.size() == 0) {
+    throw MyError("Cannot call getLeastCommonNonSupportVar with empty nonSupportVarSet", true);
+  }
+  Int lcv = -1;
+  Int minNumClauses = DUMMY_MAX_INT;
+  for (auto element : varToClauseMap) {
+    if (isFound(element.first, nonSupportVarSet)){
+      if (minNumClauses > element.second.size()) {
+        minNumClauses = element.second.size();
+        lcv = element.first;
+      }
+      if (minNumClauses == element.second.size()) {
+        if (element.first < lcv) {
+          lcv = element.first;
+        }
+      }
+    }
+  }
+  return lcv;
+}
+
+Int PBInteractiveCounter::getNextAbstractionVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const {
+  if (nonSupportVarSet.size() == 0) {
+    return getNextMergeSupportVar(varToClauseMap);
+  } else {
+    return getNextMergeNonSupportVar(varToClauseMap, nonSupportVarSet);
+  }
+}
+
+Int PBInteractiveCounter::getNextMergeSupportVar(Map<Int, Set<Int>> &varToClauseMap) const {
+  if (!preferredVariableOrdering.empty()) {
+    Int cVar;
+    Int cOrderIndex = DUMMY_MAX_INT;
+    Int currentBestVar = -1;
+    Int currentBestVarOrderIndex = DUMMY_MAX_INT;
+    for (auto& element : varToClauseMap) {
+      cVar = element.first;
+      if(currentBestVar == -1) { 
+        currentBestVar = cVar;
+      }
+      cOrderIndex = preferredVariableOrdering.at(cVar);
+      if (cOrderIndex < currentBestVarOrderIndex) {
+        currentBestVar = cVar;
+      }
+    }
+    return currentBestVar;
+  }
+  return getLeastCommonVar(varToClauseMap);
+}
+
+Int PBInteractiveCounter::getNextMergeNonSupportVar(Map<Int, Set<Int>> &varToClauseMap, Set<Int> &nonSupportVarSet) const {
+  if (nonSupportVarSet.size() == 0) {
+    throw MyError("Cannot call getNextMergeNonSupportVar with empty nonSupportVarSet", true);
+  }
+  if (!preferredVariableOrdering.empty()) {
+    Int cVar;
+    Int cOrderIndex = DUMMY_MAX_INT;
+    Int currentBestVar = -1;
+    Int currentBestVarOrderIndex = DUMMY_MAX_INT;
+    for (auto& element : varToClauseMap) {
+      cVar = element.first;
+      if(isFound(cVar, nonSupportVarSet)){
+        if(currentBestVar == -1) { 
+          currentBestVar = cVar;
+        }
+        cOrderIndex = preferredVariableOrdering.at(cVar);
+        if (cOrderIndex < currentBestVarOrderIndex) {
+          currentBestVar = cVar;
+        }
+      }
+    }
+    return currentBestVar;
+  }
+  return getLeastCommonNonSupportVar(varToClauseMap, nonSupportVarSet);
+}
+
+// for setting custom merge order in compute graph counter
+void PBInteractiveCounter::setPreferredVariableOrdering(VarOrderingHeuristic pbVarOrderingHeuristic, bool inversePbVarOrdering, const PBformula &pb) {
+  switch (pbVarOrderingHeuristic) {
+    case VarOrderingHeuristic::MINFILL: {
+      if (!preferredVariableOrdering.empty() && preferredVariableOrdering.size() >= pb.getApparentVars().size()) {
+        break;
+      }
+      preferredVariableOrdering.clear();
+      vector<Int> varOrderVector = pb.getVarOrdering(pbVarOrderingHeuristic, inversePbVarOrdering);
+      for (int i = 0; i < varOrderVector.size(); i++) {
+        preferredVariableOrdering[varOrderVector.at(i)] = i;
+      }
+      break;
+    }
+    default: {
+      // showError("Unaccepted variable merge ordering for compute graph counter.");
+      break;
+    }
+  }
+}
+Set<Int> PBInteractiveCounter::mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &clauseToAbstractedVarMap, Map<Int, Set<Int>> &clauseDDToFormulaClauseMap, const Map<Int, Float> &literalWeights) {
+  TimePoint timer = util::getTimePoint();
+  ADD dd = mgr.addOne();
+  Set<Int> clauseSet = varToClauseMap.at(targetPBVar);
+  for (Int clauseID : clauseSet) {
+    dd &= clauseDDMap[clauseID];
+  }
+  // find common variables apart from target pb var (that also does not exist elsewhere)
+  Set<Int> commonExVarSet = getClauseExclusiveVarIntersection(clauseSet, clauseToVarMap, varToClauseMap); //common vars should include target pb var
+  // project out all common such common variables
+  Set<Int> ddVarSet;
+  for (Int pbVar : commonExVarSet) {
+    ddVarSet.insert(pbVarToDdVarMap.at(pbVar));
+  }
+  abstractCube(dd, ddVarSet, literalWeights);
+  Float timeElapsedMilli = util::getMilliseconds(timer);
+
+  // add dd with variable set to mapping
+  // delete the projected out vars from the map and update remaining vars
+  for (Int pbVar : commonExVarSet) {
+    varToClauseMap.erase(pbVar);
+  }
+  Set<Int> newAbstractedVarSet;
+  Set<Int> newFormulaClauseSet;
+  // erase the entire clause and reuse an old clause id for the merged dd
+  Int newDDClauseID = *clauseSet.begin();
+  Set<Int> newVarSet;
+  for (Int clauseID : clauseSet) {
+    for (Int pbVar : clauseToVarMap.at(clauseID)) {
+      if (!isFound(pbVar, commonExVarSet)) {
+        newVarSet.insert(pbVar);
+      }
+    }
+    clauseToVarMap.erase(clauseID);
+    clauseDDMap.erase(clauseID);
+    newAbstractedVarSet = util::setUnion(newAbstractedVarSet, clauseToAbstractedVarMap.at(clauseID));
+    newFormulaClauseSet = util::setUnion(newFormulaClauseSet, clauseDDToFormulaClauseMap.at(clauseID));
+    clauseToAbstractedVarMap.erase(clauseID);
+    clauseDDToFormulaClauseMap.erase(clauseID);
+  }
+  clauseDDMap[newDDClauseID] = dd;
+  clauseToVarMap[newDDClauseID] = newVarSet;
+  clauseToAbstractedVarMap[newDDClauseID] = newAbstractedVarSet;
+  clauseDDToFormulaClauseMap[newDDClauseID] = newFormulaClauseSet;
+  // update the var clause map of the non exclusive variables
+  for (Int pbVar : newVarSet) {
+    for (Int clauseID : clauseSet) {
+      if ((clauseID != newDDClauseID) && isFound(clauseID, varToClauseMap.at(pbVar))) {
+        varToClauseMap.at(pbVar).erase(clauseID);
+      }
+    }
+    varToClauseMap.at(pbVar).insert(newDDClauseID);
+  }
+
+  // if more than CACHE_TIME_THRESHOLD seconds, store dd into cache
+  if (timeElapsedMilli > CACHE_TIME_THRESHOLD) {
+    string ddIdentifier = getDdIdentifierString(clauseDDToFormulaClauseMap.at(newDDClauseID), clauseToAbstractedVarMap.at(newDDClauseID));
+    ddCache[ddIdentifier] = dd;
+  }
+  return commonExVarSet;
+}
+Set<Int> PBInteractiveCounter::mergeUpdateClauses(Int targetPBVar, Map<Int, Set<Int>> &varToClauseMap, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, ADD> &clauseDDMap, Map<Int, Set<Int>> &clauseToAbstractedVarMap, Map<Int, Set<Int>> &clauseToOrAbstractedVarMap , Map<Int, Set<Int>> &clauseDDToFormulaClauseMap, const Map<Int, Float> &literalWeights, Set<Int> &nonSupportVarSet) {
+  bool processedNonSupport = (nonSupportVarSet.size() == 0);
+  TimePoint timer = util::getTimePoint();
+  ADD dd = mgr.addOne();
+  Set<Int> clauseSet = varToClauseMap.at(targetPBVar);
+  for (Int clauseID : clauseSet) {
+    dd &= clauseDDMap[clauseID];
+  }
+  // find common variables apart from target pb var (that also does not exist elsewhere)
+  Set<Int> commonExVarSet = getClauseExclusiveVarIntersection(clauseSet, clauseToVarMap, varToClauseMap); //common vars should include target pb var
+  // project out all common such common variables
+  if (!processedNonSupport) {
+    Set<Int> nonSupportcommonExVarSet;
+    for (Int pbVar : commonExVarSet) {
+      if (isFound(pbVar, nonSupportVarSet)) {
+        nonSupportcommonExVarSet.insert(pbVar);
+      }
+    }
+    commonExVarSet = nonSupportcommonExVarSet;
+  }
+
+  Set<Int> ddVarSet;
+  for (Int pbVar : commonExVarSet) {
+    if (!processedNonSupport) {
+      if (isFound(pbVar, nonSupportVarSet)) {
+        ddVarSet.insert(pbVarToDdVarMap.at(pbVar));
+      }
+    } else {
+      ddVarSet.insert(pbVarToDdVarMap.at(pbVar));
+    }
+  }
+  if (!processedNonSupport) {
+    orAbstractCube(dd, ddVarSet);
+  } else {
+    abstractCube(dd, ddVarSet, literalWeights);
+  }
+  Float timeElapsedMilli = util::getMilliseconds(timer);
+  // add dd with variable set to mapping
+  // delete the projected out vars from the map and update remaining vars
+  for (Int pbVar : commonExVarSet) {
+    varToClauseMap.erase(pbVar);
+    if (isFound(pbVar, nonSupportVarSet)) {
+      nonSupportVarSet.erase(pbVar);
+    }
+  }
+  Set<Int> newAbstractedVarSet;
+  Set<Int> newOrAbstractedVarSet;
+  Set<Int> newFormulaClauseSet;
+  // erase the entire clause and reuse an old clause id for the merged dd
+  Int newDDClauseID = *clauseSet.begin();
+  Set<Int> newVarSet;
+  for (Int clauseID : clauseSet) {
+    for (Int pbVar : clauseToVarMap.at(clauseID)) {
+      if (!isFound(pbVar, commonExVarSet)) {
+        newVarSet.insert(pbVar);
+      }
+    }
+    clauseToVarMap.erase(clauseID);
+    clauseDDMap.erase(clauseID);
+    newAbstractedVarSet = util::setUnion(newAbstractedVarSet, clauseToAbstractedVarMap.at(clauseID));
+    newOrAbstractedVarSet = util::setUnion(newOrAbstractedVarSet, clauseToOrAbstractedVarMap.at(clauseID));
+    newFormulaClauseSet = util::setUnion(newFormulaClauseSet, clauseDDToFormulaClauseMap.at(clauseID));
+    clauseToAbstractedVarMap.erase(clauseID);
+    clauseToOrAbstractedVarMap.erase(clauseID);
+    clauseDDToFormulaClauseMap.erase(clauseID);
+  }
+  // update for abstracted variables during this round
+  for (Int clauseId : commonExVarSet) {
+    if (processedNonSupport) {
+      newAbstractedVarSet.insert(clauseId);
+    } else {
+      newOrAbstractedVarSet.insert(clauseId);
+    }
+  }
+  clauseDDMap[newDDClauseID] = dd;
+  clauseToVarMap[newDDClauseID] = newVarSet;
+  clauseToAbstractedVarMap[newDDClauseID] = newAbstractedVarSet;
+  clauseToOrAbstractedVarMap[newDDClauseID] = newOrAbstractedVarSet;
+  clauseDDToFormulaClauseMap[newDDClauseID] = newFormulaClauseSet;
+  // update the var clause map of the non exclusive variables
+  for (Int pbVar : newVarSet) {
+    for (Int clauseID : clauseSet) {
+      if ((clauseID != newDDClauseID) && isFound(clauseID, varToClauseMap.at(pbVar))) {
+        varToClauseMap.at(pbVar).erase(clauseID);
+      }
+    }
+    varToClauseMap.at(pbVar).insert(newDDClauseID);
+  }
+  // if more than CACHE_TIME_THRESHOLD seconds, store dd into cache
+  if (timeElapsedMilli >= CACHE_TIME_THRESHOLD) {
+    string ddIdentifier = getDdIdentifierString(clauseDDToFormulaClauseMap.at(newDDClauseID), clauseToAbstractedVarMap.at(newDDClauseID), clauseToOrAbstractedVarMap.at(newDDClauseID));
+    ddCache[ddIdentifier] = dd;
+  }
+  return commonExVarSet;
+}
+Set<Int> PBInteractiveCounter::getClauseExclusiveVarIntersection(Set<Int> &clauseSet, Map<Int, Set<Int>> &clauseToVarMap, Map<Int, Set<Int>> &varToClauseMap) {
+  Set<Int> commonVarSet = clauseToVarMap.at(*clauseSet.begin());
+  for (Int clauseID : clauseSet) {
+    commonVarSet = util::setIntersection(commonVarSet, clauseToVarMap.at(clauseID));
+  }
+  vector<Int> nonExclusiveVariables;
+  for (Int var : commonVarSet) {
+    if (clauseSet.size() != varToClauseMap.at(var).size()) {
+      nonExclusiveVariables.push_back(var);
+      continue;
+    }
+    bool match = true;
+    for (Int candidateClauseID : varToClauseMap.at(var)) {
+      if (!isFound(candidateClauseID, clauseSet)) {
+        match = false;
+      }
+    }
+    if (!match) { nonExclusiveVariables.push_back(var); }
+  }
+  // remove non exclusive elements
+  for (Int var : nonExclusiveVariables) {
+    commonVarSet.erase(var);
+  }
+  return commonVarSet;
+}
+
+//public functions
+
+void PBInteractiveCounter::setAdaptiveRestartMode(bool restartOn) {
+  restartOnOrderingMisalign = restartOn;
+}
+void PBInteractiveCounter::setDDMgr(Cudd &newMgr) {
+  mgr = newMgr;
+}
+Cudd &PBInteractiveCounter::getDDMgr() {
+  return mgr;
+}
+void PBInteractiveCounter::setCache(Map<string, ADD> &newCache) {
+  ddCache = newCache;
+}
+void PBInteractiveCounter::clearCache() {
+  ddCache.clear();
+}
+Map<string, ADD> &PBInteractiveCounter::getCache(){
+  return ddCache;
+}
+void PBInteractiveCounter::setActiveClauses(vector<bool> newActiveClauses) {
+  activeClauses = newActiveClauses;
+}
+Float PBInteractiveCounter::computeModelCount(const PBformula &pb) {
+  // setting merge variable order if there is a preferredOrdering
+  setPreferredVariableOrdering(pbVarOrderingHeuristic, inversePbVarOrdering, pb);
+  if (restartOnOrderingMisalign || PRINT_ORDERING_OFFSET) {
+    orderDdVarsIncrementalWithRestart(pb);
+  } else {
+    orderDdVarsIncremental(pb);
+  }
+  MultiTypeGraph interactionGraph = pb.getInteractionGraph();
+  Map<Int, Set<Int>> variableToClauseMap = interactionGraph.getVarToClauseMap();
+  Map<Int, Set<Int>> clauseToVariableMap = interactionGraph.getClauseToVarMap();
+  Map<Int, ADD> clauseDDMap = compileClauses(pb);
+  Map<Int, Set<Int>> clauseToAbstractedVarMap;
+  Map<Int, Set<Int>> clauseToOrAbstractedVarMap;
+
+  Set<Int> projectionSupportVarSet;
+  if (pb.isProjected()) {
+    projectionSupportVarSet = pb.getProjectionVariableSet();
+  } else {
+    for (PBclause const &clause : pb.getClauses()) {
+      if (activeClauses.at(clause.clauseId - 1)) {
+        for (Int lit : clause.lits) {
+          projectionSupportVarSet.insert(abs(lit));
+        }
+      }
+    }
+  }
+  
+  
+  // resume cache
+  ComputeState resumedComputeState = resolveCache(pb, variableToClauseMap, clauseToVariableMap, clauseDDMap);
+  variableToClauseMap = resumedComputeState.varToClauseMapState;
+  clauseToVariableMap = resumedComputeState.clauseToVarMapState;
+  clauseDDMap = resumedComputeState.clauseToDdMapState;
+  clauseToAbstractedVarMap = resumedComputeState.clauseToAbstractedVarMapState;
+  clauseToOrAbstractedVarMap = resumedComputeState.clauseToOrAbstractedVarMapState;
+
+  Map<Int, Set<Int>> clauseDDToFormulaClauseMap;
+  clauseDDToFormulaClauseMap = resumedComputeState.clauseDDToFormulaClauseMapState;
+
+  Set<Int> activeVarSet = getActiveVariables(pb);
+  Set<Int> nonSupportVarSet;
+  Set<Int> processVarSet;
+  for (auto const &element : clauseToAbstractedVarMap) {
+    for (Int var : element.second) {
+      processVarSet.insert(var);
+    }
+  }
+  for (auto const &element : clauseToOrAbstractedVarMap) {
+    for (Int var : element.second) {
+      processVarSet.insert(var);
+    }
+  }
+  for (Int var : activeVarSet) {
+    if (!isFound(var, processVarSet) && !isFound(var, projectionSupportVarSet)) {
+      nonSupportVarSet.insert(var);
+    }
+  }
+
+  while (variableToClauseMap.size() > 0) {
+    Int targetPBVar = getNextAbstractionVar(variableToClauseMap, nonSupportVarSet);
+    Set<Int> newlyProcessedVariables = mergeUpdateClauses(targetPBVar, variableToClauseMap, clauseToVariableMap, clauseDDMap, clauseToAbstractedVarMap, clauseToOrAbstractedVarMap, clauseDDToFormulaClauseMap, pb.getLiteralWeights(), nonSupportVarSet);
+    processVarSet = util::setUnion(processVarSet, newlyProcessedVariables);
+  }
+  // handling case where early abstraction handled all variables, left with more than 1 constant ADD.
+  ADD pbDd = mgr.addOne();
+  if (clauseDDMap.size() > 1) {
+    Int newClauseId = clauseDDMap.begin()->first;
+    for (auto element : clauseDDMap) {
+      pbDd *= element.second;
+    }
+    clauseDDMap.clear();
+    clauseDDMap[newClauseId] = pbDd;
+  }
+  // getting the model count from the constant decision diagram
+  pbDd = (clauseDDMap.begin()->second);
+  Float modelCount = diagram::countConstDdFloat(pbDd);
+  // adjust model count for simplifications during preprocessing
+  modelCount = util::adjustInteractiveProjectedModelCountCG(modelCount, pb.getLiteralWeights(), pb.getInferredAssignments(), projectionSupportVarSet, activeVarSet);
+  modelCount = util::adjustInteractiveProjectedModelCountCGMissingVar(modelCount, pb.getLiteralWeights(), pb.getInferredAssignments(), processVarSet, projectionSupportVarSet, activeVarSet);
+
+  return modelCount;
+}
+Float PBInteractiveCounter::computeProjectedModelCount(const PBformula &pb) {
+  return 0;
+}
+PBInteractiveCounter::PBInteractiveCounter() {
+  ddVarOrderingHeuristic = VarOrderingHeuristic::MCS;
+  clauseCompilationHeuristic = ClauseCompilationHeuristic::DYNAMIC;
+  inverseDdVarOrdering = false;
+}
+void PBInteractiveCounter::setDdVarOrderingHeuristic(VarOrderingHeuristic ddVarOrderingHeuristic) {
+  this->ddVarOrderingHeuristic = ddVarOrderingHeuristic;
+}
+void PBInteractiveCounter::setInverseDdVarOrdering(bool inverseDdVarOrdering) {
+  this->inverseDdVarOrdering = inverseDdVarOrdering;
+}
+void PBInteractiveCounter::setClauseCompilationHeuristic(ClauseCompilationHeuristic clauseCompilationHeuristic) {
+  this->clauseCompilationHeuristic = clauseCompilationHeuristic;
+}
+void PBInteractiveCounter::setPbVarOrderingHeuristic(VarOrderingHeuristic pdVarOrderingHeuristic) {
+  this->pbVarOrderingHeuristic = pdVarOrderingHeuristic;
+}
+void PBInteractiveCounter::setInversePbVarOrdering(bool inversePbVarOrdering) {
+  this->inversePbVarOrdering = inversePbVarOrdering;
 }
